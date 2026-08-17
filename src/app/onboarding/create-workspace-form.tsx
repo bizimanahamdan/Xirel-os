@@ -1,29 +1,42 @@
 'use client';
 
-import { useActionState } from 'react';
-import { useFormStatus } from 'react-dom';
+import { useState, useTransition } from 'react';
 import { createWorkspace, type CreateWorkspaceState } from '@/lib/workspaces/create-workspace';
 
-const initialState: CreateWorkspaceState = {};
-
-function SubmitButton() {
-  const { pending } = useFormStatus();
+function SubmitButton({ isPending }: { isPending: boolean }) {
   return (
     <button
       type="submit"
-      disabled={pending}
+      disabled={isPending}
       className="w-full rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
     >
-      {pending ? 'Creating…' : 'Create workspace'}
+      {isPending ? 'Creating…' : 'Create workspace'}
     </button>
   );
 }
 
 export default function CreateWorkspaceForm() {
-  const [state, formAction] = useActionState(createWorkspace, initialState);
+  const [isPending, startTransition] = useTransition();
+  const [state, setState] = useState<CreateWorkspaceState>({});
+
+  function handleSubmit(formData: FormData) {
+    startTransition(async () => {
+      const result = await createWorkspace({}, formData);
+      if (result.error) {
+        setState(result);
+      }
+    });
+  }
 
   return (
-    <form action={formAction} className="space-y-3">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const formData = new FormData(e.currentTarget);
+        handleSubmit(formData);
+      }}
+      className="space-y-3"
+    >
       <input
         name="name"
         required
@@ -33,7 +46,7 @@ export default function CreateWorkspaceForm() {
         autoFocus
         className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm outline-none focus:border-primary"
       />
-      <SubmitButton />
+      <SubmitButton isPending={isPending} />
       {state.error && <p className="text-sm text-red-400">{state.error}</p>}
     </form>
   );

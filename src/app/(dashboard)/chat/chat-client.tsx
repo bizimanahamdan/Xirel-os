@@ -102,8 +102,10 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
               fullResponse += parsed.text;
               setMessages((prev) => {
                 const updated = [...prev];
-                if (updated[updated.length - 1]?.role === 'assistant') {
-                  updated[updated.length - 1].content = fullResponse;
+                const lastMessage = updated[updated.length - 1];
+                // Only update if the last message is an assistant message
+                if (lastMessage && lastMessage.role === 'assistant') {
+                  lastMessage.content = fullResponse;
                 }
                 return updated;
               });
