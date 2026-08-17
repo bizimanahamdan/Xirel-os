@@ -59,9 +59,13 @@ this:
 - Moonshot/OpenAI/Anthropic adapters — the spec treats these as
   optional; adding one is a ~150-line file following the exact shape
   of `src/lib/ai/providers/groq.ts`, once you decide you need it.
-- Workspace creation UI/flow — the schema and RLS support it, but
-  there's no "create your first workspace" page yet. Small, but real,
-  next task.
+- ~~Workspace creation UI/flow~~ — implemented (`/onboarding` +
+  `src/lib/workspaces/`). Dashboard redirects users with no workspace
+  there automatically. Read the trust-boundary comment at the top of
+  `create-workspace.ts` before writing more Drizzle mutations — it
+  explains an important, easy-to-miss gap between how RLS is enforced
+  (Supabase's PostgREST/JWT path) and how this app's server actions
+  actually write data (a direct, RLS-bypassing Postgres connection).
 
 ## Setup
 
@@ -98,14 +102,27 @@ npm run dev
   shape fully visible in this codebase rather than hidden in a
   third-party SDK. Trade-off: adapters need updating if a provider's
   REST API changes shape, same as an SDK would.
-- **RLS is the real isolation boundary**, not just app-level
-  `WHERE workspace_id = ...` checks. A bug in application code
-  should not be able to leak one workspace's data into another.
+- **RLS protects the Supabase-client path** (browser client, any
+  future PostgREST/realtime usage) **but not the Drizzle path.**
+  This is a correction to an earlier draft of this README, which
+  overstated RLS as "the" isolation boundary everywhere. In practice:
+  all current data writes go through Server Actions using Drizzle
+  over `DATABASE_URL`, a direct Postgres connection that bypasses RLS.
+  Isolation there depends on every query manually scoping by the
+  session's `user.id` — see the comment in
+  `src/lib/workspaces/create-workspace.ts` for the full explanation.
+  If this codebase later adds browser-side Supabase queries (e.g.
+  realtime task updates), RLS is what protects those, and the two
+  enforcement mechanisms need to be kept in sync by hand — there's no
+  single switch that guarantees both.
 
 ## Next task
 
-Two reasonable next steps — pick one:
+Onboarding (`/onboarding`) now creates a workspace and the dashboard
+redirects there automatically for new users. Reasonable next steps:
 1. **Verify this foundation actually works** (run the checklist
-   above) before building anything else on top of it.
-2. **Workspace creation flow** — the one missing piece to make the
-   dashboard usable end-to-end.
+   above) before building anything else on top of it — still not
+   done, and still the highest-priority item.
+2. Once verified: start Phase 2 (AI Command Center) — the chat/command
+   interface that turns a natural-language request into the first
+   real call through `routeGenerateText`.

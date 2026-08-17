@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import { createSupabaseServerClient } from '@/lib/auth/supabase-server';
 import { db } from '@/lib/db';
 import { workspaceMembers, workspaces } from '@/lib/db/schema';
@@ -22,7 +23,13 @@ export default async function DashboardPage() {
     .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
     .where(eq(workspaceMembers.userId, user.id));
 
+  if (memberships.length === 0) {
+    redirect('/onboarding');
+  }
+
   const configuredProviders = getConfiguredProviders();
+
+  const firstWorkspace = memberships[0]?.workspace;
 
   return (
     <main className="min-h-screen p-8">
@@ -35,21 +42,29 @@ export default async function DashboardPage() {
           <SignOutButton />
         </div>
 
+        {configuredProviders.length > 0 && firstWorkspace && (
+          <div className="mb-6 rounded-xl border border-border bg-surface/50 p-6">
+            <Link
+              href={`/chat?workspace=${firstWorkspace.id}`}
+              className="block rounded-lg bg-primary px-6 py-3 text-center font-medium text-primary-foreground hover:bg-primary/90 transition"
+            >
+              Open AI Command Center
+            </Link>
+            <p className="mt-3 text-sm text-muted">
+              Chat with your AI team to build, research, analyze, and deploy.
+            </p>
+          </div>
+        )}
+
         <section className="mb-6 rounded-xl border border-border bg-surface p-6">
           <h2 className="mb-3 text-sm font-medium text-muted">Workspaces</h2>
-          {memberships.length === 0 ? (
-            <p className="text-sm text-muted">
-              No workspace yet. Workspace creation ships with the Phase 1 onboarding flow.
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {memberships.map((m) => (
-                <li key={m.workspace.id} className="text-sm">
-                  {m.workspace.name}
-                </li>
-              ))}
-            </ul>
-          )}
+          <ul className="space-y-2">
+            {memberships.map((m) => (
+              <li key={m.workspace.id} className="text-sm">
+                {m.workspace.name}
+              </li>
+            ))}
+          </ul>
         </section>
 
         <section className="rounded-xl border border-border bg-surface p-6">

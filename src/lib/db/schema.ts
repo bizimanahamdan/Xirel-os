@@ -42,6 +42,17 @@ export const aiProviderIdEnum = pgEnum('ai_provider_id', [
   'moonshot',
   'openai',
   'anthropic',
+  'openrouter',
+]);
+
+export const taskStatusEnum = pgEnum('task_status', [
+  'queued',
+  'planning',
+  'running',
+  'waiting_for_approval',
+  'completed',
+  'failed',
+  'cancelled',
 ]);
 
 // ─────────────────────────────────────────────────────────
@@ -137,6 +148,39 @@ export const workspaceAiProviders = pgTable('workspace_ai_providers', {
 }));
 
 // ─────────────────────────────────────────────────────────
+// tasks — individual commands/requests from users
+// ─────────────────────────────────────────────────────────
+
+export const tasks = pgTable('tasks', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => profiles.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  description: text('description'),
+  status: taskStatusEnum('status').notNull().default('queued'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ─────────────────────────────────────────────────────────
+// messages — conversation history within a task
+// ─────────────────────────────────────────────────────────
+
+export const messages = pgTable('messages', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  taskId: uuid('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(), // 'system', 'user', 'assistant'
+  content: text('content').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ─────────────────────────────────────────────────────────
 // Relations (for Drizzle's relational query API)
 // ─────────────────────────────────────────────────────────
 
@@ -165,5 +209,24 @@ export const projectsRelations = relations(projects, ({ one }) => ({
   workspace: one(workspaces, {
     fields: [projects.workspaceId],
     references: [workspaces.id],
+  }),
+}));
+
+export const tasksRelations = relations(tasks, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [tasks.workspaceId],
+    references: [workspaces.id],
+  }),
+  user: one(profiles, {
+    fields: [tasks.userId],
+    references: [profiles.id],
+  }),
+  messages: many(messages),
+}));
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  task: one(tasks, {
+    fields: [messages.taskId],
+    references: [tasks.id],
   }),
 }));

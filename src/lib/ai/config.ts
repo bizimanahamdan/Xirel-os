@@ -20,6 +20,7 @@ const PROVIDER_ENV_REQUIREMENTS: ProviderEnvRequirement[] = [
   { id: 'moonshot', requiredEnvVars: ['MOONSHOT_API_KEY'] },
   { id: 'openai', requiredEnvVars: ['OPENAI_API_KEY'] },
   { id: 'anthropic', requiredEnvVars: ['ANTHROPIC_API_KEY'] },
+  { id: 'openrouter', requiredEnvVars: ['OPENROUTER_API_KEY'] },
 ];
 
 export function isProviderConfigured(id: AiProviderId): boolean {

@@ -51,7 +51,7 @@ exception when duplicate_object then null;
 end $$;
 
 do $$ begin
-  create type ai_provider_id as enum ('gemini', 'groq', 'qwen', 'moonshot', 'openai', 'anthropic');
+  create type ai_provider_id as enum ('gemini', 'groq', 'qwen', 'moonshot', 'openai', 'anthropic', 'openrouter');
 exception when duplicate_object then null;
 end $$;
 
@@ -77,6 +77,12 @@ create table if not exists public.workspace_members (
 );
 
 -- When a workspace is created, add its creator as owner automatically.
+-- NOTE: the application's createWorkspace server action (src/lib/workspaces/
+-- create-workspace.ts) also inserts this membership explicitly in the same
+-- transaction, because it cannot safely assume a trigger fired — it uses
+-- ON CONFLICT DO NOTHING so the two paths don't collide. Keep both: this
+-- trigger protects rows created via any other path (SQL editor, future
+-- admin tooling) that bypasses the app entirely.
 create or replace function public.handle_new_workspace()
 returns trigger
 language plpgsql

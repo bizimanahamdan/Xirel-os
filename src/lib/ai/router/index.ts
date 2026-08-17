@@ -69,3 +69,36 @@ export async function routeGenerateText(request: RouteRequest): Promise<RouteRes
       failedProviders.map((f) => `${f.providerId} (${f.error})`).join(', ')
   );
 }
+
+export async function* routeStreamText(
+  request: RouteRequest
+): AsyncGenerator<{ text: string; providerId: AiProviderId }> {
+  const candidates = request.providerPriority.slice(0, MAX_ATTEMPTS);
+
+  if (candidates.length === 0) {
+    throw new Error('routeStreamText: providerPriority was empty — nothing to try.');
+  }
+
+  for (const providerId of candidates) {
+    const provider = getProvider(providerId);
+
+    if (!provider.isConfigured()) {
+      continue;
+    }
+
+    try {
+      for await (const chunk of provider.streamText(request)) {
+        yield { text: chunk.text, providerId };
+      }
+      return;
+    } catch (err) {
+      const message = err instanceof AiProviderError ? err.message : String(err);
+      console.warn(`Provider ${providerId} stream failed: ${message}`);
+      continue;
+    }
+  }
+
+  throw new Error(
+    `All ${candidates.length} candidate provider(s) failed or were unconfigured for streaming`
+  );
+}

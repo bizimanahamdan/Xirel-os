@@ -13,7 +13,8 @@ export type AiProviderId =
   | 'qwen'
   | 'moonshot'
   | 'openai'
-  | 'anthropic';
+  | 'anthropic'
+  | 'openrouter';
 
 export interface AiMessage {
   role: 'system' | 'user' | 'assistant';
