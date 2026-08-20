@@ -127,6 +127,18 @@ export async function createTask(workspaceId: string, userId: string, title: str
       })
       .returning();
 
+    // .returning() types its result as T[], so destructuring the first
+    // element is T | undefined at the type level even though a
+    // successful single-row insert always returns exactly one row.
+    // Throwing here (rather than returning possibly-undefined) means
+    // every caller gets a guaranteed non-undefined Task back instead of
+    // each needing its own undefined check — same TypeScript-narrowing
+    // discipline as the chat-client.tsx array-element fix, applied at
+    // the source instead of at every call site.
+    if (!newTask) {
+      throw new Error('Task insert returned no row');
+    }
+
     return newTask;
   } catch (err) {
     console.error('Failed to create task:', err);
