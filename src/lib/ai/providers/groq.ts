@@ -10,6 +10,12 @@ import type {
 } from '../types';
 import { AiProviderError } from '../types';
 import { isProviderConfigured } from '../config';
+import {
+  toOpenAiMessages,
+  toOpenAiTool,
+  fromOpenAiToolCalls,
+  fromOpenAiFinishReason,
+} from './openai-compat';
 
 /**
  * Groq adapter. Groq exposes an OpenAI-compatible chat completions API,
@@ -44,15 +50,17 @@ export const groqProvider: AiProvider = {
 
     const res = await fetch(`${GROQ_API_BASE}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0.7,
         max_tokens: request.maxOutputTokens,
+        tools: request.tools?.map(toOpenAiTool),
         stream: false,
       }),
     });
@@ -83,6 +91,8 @@ export const groqProvider: AiProvider = {
       latencyMs: Date.now() - start,
       model: request.model,
       providerId: 'groq',
+      toolCalls: fromOpenAiToolCalls(choice.message?.tool_calls),
+      finishReason: fromOpenAiFinishReason(choice.finish_reason),
     };
   },
 
@@ -91,13 +101,14 @@ export const groqProvider: AiProvider = {
 
     const res = await fetch(`${GROQ_API_BASE}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0.7,
         max_tokens: request.maxOutputTokens,
         stream: true,
@@ -158,13 +169,14 @@ export const groqProvider: AiProvider = {
 
     const res = await fetch(`${GROQ_API_BASE}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0,
         response_format: {
           type: 'json_schema',
@@ -232,6 +244,7 @@ export const groqProvider: AiProvider = {
     try {
       const res = await fetch(`${GROQ_API_BASE}/models`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
+        signal: AbortSignal.timeout(8_000),
       });
       return {
         status: res.ok ? 'healthy' : 'degraded',

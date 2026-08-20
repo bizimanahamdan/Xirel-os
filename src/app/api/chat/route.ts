@@ -2,11 +2,11 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createSupabaseServerClient } from '@/lib/auth/supabase-server';
 import { db } from '@/lib/db';
-import { tasks, messages } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { messages } from '@/lib/db/schema';
 import { routeStreamText } from '@/lib/ai/router';
-import type { AiProviderId } from '@/lib/ai/types';
 import { getConfiguredProviderInstances } from '@/lib/ai/registry';
+import { getTaskMessages, createTask, updateTaskStatus } from '@/lib/tasks/queries';
+import type { AiProviderId } from '@/lib/ai/types';
 
 /**
  * POST /api/chat
@@ -63,19 +63,7 @@ export async function POST(request: NextRequest) {
   // Create or reuse task
   if (!currentTaskId) {
     try {
-      const [newTask] = await db
-        .insert(tasks)
-        .values({
-          workspaceId,
-          userId: user.id,
-          title: message.slice(0, 100),
-          status: 'running',
-        })
-        .returning({ id: tasks.id });
-
-      if (!newTask) {
-        return NextResponse.json({ error: 'Failed to create task' }, { status: 500 });
-      }
+      const newTask = await createTask(workspaceId, user.id, message.slice(0, 100));
       currentTaskId = newTask.id;
     } catch (err) {
       console.error('Failed to create task:', err);
@@ -100,11 +88,7 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       try {
         // Fetch existing messages for context
-        const messageHistory = await db
-          .select()
-          .from(messages)
-          .where(eq(messages.taskId, currentTaskId))
-          .orderBy(messages.createdAt);
+        const messageHistory = await getTaskMessages(currentTaskId);
 
         const aiMessages = messageHistory.map((m) => ({
           role: m.role as 'system' | 'user' | 'assistant',
@@ -160,10 +144,7 @@ export async function POST(request: NextRequest) {
         });
 
         // Update task status
-        await db
-          .update(tasks)
-          .set({ status: 'completed', updatedAt: new Date() })
-          .where(eq(tasks.id, currentTaskId));
+        await updateTaskStatus(currentTaskId, 'completed');
 
         controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
         controller.close();
@@ -179,10 +160,7 @@ export async function POST(request: NextRequest) {
 
         // Mark task as failed
         try {
-          await db
-            .update(tasks)
-            .set({ status: 'failed', updatedAt: new Date() })
-            .where(eq(tasks.id, currentTaskId));
+          await updateTaskStatus(currentTaskId, 'failed');
         } catch {
           // Silent fail — client already got the error
         }

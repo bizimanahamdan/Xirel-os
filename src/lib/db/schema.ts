@@ -55,6 +55,14 @@ export const taskStatusEnum = pgEnum('task_status', [
   'cancelled',
 ]);
 
+export const toolRiskLevelEnum = pgEnum('tool_risk_level', [
+  'safe',
+  'low',
+  'moderate',
+  'high',
+  'destructive',
+]);
+
 // ─────────────────────────────────────────────────────────
 // Profiles — mirrors auth.users, holds app-specific user fields
 // ─────────────────────────────────────────────────────────
@@ -168,6 +176,11 @@ export const tasks = pgTable('tasks', {
 
 // ─────────────────────────────────────────────────────────
 // messages — conversation history within a task
+//
+// Phase 3 addition: role now includes 'tool' (a tool execution result
+// fed back to the model), and assistant messages that requested tool
+// calls carry them in toolCalls. See migration 0004 for the matching
+// idempotent ALTER TABLE / constraint change.
 // ─────────────────────────────────────────────────────────
 
 export const messages = pgTable('messages', {
@@ -175,8 +188,39 @@ export const messages = pgTable('messages', {
   taskId: uuid('task_id')
     .notNull()
     .references(() => tasks.id, { onDelete: 'cascade' }),
-  role: text('role').notNull(), // 'system', 'user', 'assistant'
+  role: text('role').notNull(), // 'system', 'user', 'assistant', 'tool'
   content: text('content').notNull(),
+  /** Present when role = 'assistant' and the model requested tool calls instead of / alongside replying. */
+  toolCalls: jsonb('tool_calls').$type<
+    { id: string; name: string; arguments: Record<string, unknown> }[]
+  >(),
+  /** Present when role = 'tool' — must match the id of the AiToolCall this message answers. */
+  toolCallId: text('tool_call_id'),
+  /** Present when role = 'tool' — the tool's name. */
+  toolName: text('tool_name'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ─────────────────────────────────────────────────────────
+// tool_executions — audit log of every tool call an agent makes
+// within a task. Phase 3 (Agent Framework). Every tool call is
+// logged regardless of success/failure — this is the record that
+// lets a human review what an agent actually did, per the project
+// spec's requirement that every tool call have error handling and
+// (for higher-risk tools, in a later phase) an approval trail.
+// ─────────────────────────────────────────────────────────
+
+export const toolExecutions = pgTable('tool_executions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  taskId: uuid('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(),
+  riskLevel: toolRiskLevelEnum('risk_level').notNull(),
+  input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+  output: jsonb('output').$type<Record<string, unknown>>(),
+  success: boolean('success').notNull(),
+  error: text('error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -222,6 +266,14 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
     references: [profiles.id],
   }),
   messages: many(messages),
+  toolExecutions: many(toolExecutions),
+}));
+
+export const toolExecutionsRelations = relations(toolExecutions, ({ one }) => ({
+  task: one(tasks, {
+    fields: [toolExecutions.taskId],
+    references: [tasks.id],
+  }),
 }));
 
 export const messagesRelations = relations(messages, ({ one }) => ({

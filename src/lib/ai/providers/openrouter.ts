@@ -10,6 +10,12 @@ import type {
 } from '../types';
 import { AiProviderError } from '../types';
 import { isProviderConfigured } from '../config';
+import {
+  toOpenAiMessages,
+  toOpenAiTool,
+  fromOpenAiToolCalls,
+  fromOpenAiFinishReason,
+} from './openai-compat';
 
 /**
  * OpenRouter adapter. OpenRouter is an aggregator that routes requests to
@@ -51,6 +57,7 @@ export const openrouterProvider: AiProvider = {
 
     const res = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -59,9 +66,10 @@ export const openrouterProvider: AiProvider = {
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0.7,
         max_tokens: request.maxOutputTokens,
+        tools: request.tools?.map(toOpenAiTool),
         stream: false,
       }),
     });
@@ -92,6 +100,8 @@ export const openrouterProvider: AiProvider = {
       latencyMs: Date.now() - start,
       model: request.model,
       providerId: 'openrouter',
+      toolCalls: fromOpenAiToolCalls(choice.message?.tool_calls),
+      finishReason: fromOpenAiFinishReason(choice.finish_reason),
     };
   },
 
@@ -100,6 +110,7 @@ export const openrouterProvider: AiProvider = {
 
     const res = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -108,7 +119,7 @@ export const openrouterProvider: AiProvider = {
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0.7,
         max_tokens: request.maxOutputTokens,
         stream: true,
@@ -163,6 +174,7 @@ export const openrouterProvider: AiProvider = {
 
     const res = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -171,7 +183,7 @@ export const openrouterProvider: AiProvider = {
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0,
         response_format: {
           type: 'json_schema',
@@ -241,6 +253,7 @@ export const openrouterProvider: AiProvider = {
           Authorization: `Bearer ${getApiKey()}`,
           'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
         },
+        signal: AbortSignal.timeout(8_000),
       });
       return {
         status: res.ok ? 'healthy' : 'degraded',

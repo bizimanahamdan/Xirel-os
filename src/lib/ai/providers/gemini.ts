@@ -5,6 +5,8 @@ import type {
   AiProvider,
   AiRequest,
   AiResponse,
+  AiToolCall,
+  AiToolDefinition,
   ProviderCapabilities,
   ProviderHealth,
   StructuredAiRequest,
@@ -23,6 +25,14 @@ import { isProviderConfigured } from '../config';
  *
  * Gemini has no separate "system" role — system instructions are sent
  * via a dedicated `systemInstruction` field, so we split messages here.
+ *
+ * Function calling: request uses `tools: [{ functionDeclarations }]`;
+ * responses may contain `functionCall` parts instead of/alongside text;
+ * results are sent back as a `function`-role content with a
+ * `functionResponse` part. This shape is ESPECIALLY unverified — Gemini's
+ * function-calling multi-turn convention has changed across API versions.
+ * Confirm against https://ai.google.dev/gemini-api/docs/function-calling
+ * before routing agent tool calls through Gemini in production.
  */
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -42,15 +52,96 @@ function toGeminiContents(messages: AiMessage[]) {
 
   const contents = messages
     .filter((m) => m.role !== 'system')
-    .map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
+    .map((m) => {
+      if (m.role === 'tool') {
+        // Gemini's multi-turn function-calling convention: the tool result
+        // goes back as a 'function' role content with a functionResponse part.
+        // UNVERIFIED against a live call — see file-level note above.
+        return {
+          role: 'function',
+          parts: [
+            {
+              functionResponse: {
+                name: m.name ?? 'unknown_tool',
+                response: { result: m.content },
+              },
+            },
+          ],
+        };
+      }
+      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+        return {
+          role: 'model',
+          parts: m.toolCalls.map((tc) => ({
+            functionCall: { name: tc.name, args: tc.arguments },
+          })),
+        };
+      }
+      return {
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      };
+    });
 
   return {
     systemInstruction: systemParts.length > 0 ? { parts: systemParts } : undefined,
     contents,
   };
+}
+
+function toGeminiTools(tools: AiToolDefinition[] | undefined) {
+  if (!tools || tools.length === 0) return undefined;
+  return [
+    {
+      functionDeclarations: tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      })),
+    },
+  ];
+}
+
+interface GeminiPart {
+  text?: string;
+  functionCall?: { name: string; args: Record<string, unknown> };
+}
+
+function extractText(parts: GeminiPart[] | undefined): string {
+  return parts?.map((p) => p.text ?? '').join('') ?? '';
+}
+
+function extractToolCalls(parts: GeminiPart[] | undefined): AiToolCall[] | undefined {
+  const calls = (parts ?? [])
+    .filter((p): p is GeminiPart & { functionCall: NonNullable<GeminiPart['functionCall']> } =>
+      Boolean(p.functionCall)
+    )
+    .map((p, i) => ({
+      // Gemini's functionCall has no built-in call id — synthesize one so
+      // AiToolCall.id can round-trip through the agent loop's tool results.
+      id: `fc-${i}-${p.functionCall.name}`,
+      name: p.functionCall.name,
+      arguments: p.functionCall.args ?? {},
+    }));
+  return calls.length > 0 ? calls : undefined;
+}
+
+function geminiFinishReason(
+  reason: string | undefined,
+  hasToolCalls: boolean
+): AiResponse['finishReason'] {
+  if (hasToolCalls) return 'tool_calls';
+  switch (reason) {
+    case 'STOP':
+      return 'stop';
+    case 'MAX_TOKENS':
+      return 'length';
+    case 'SAFETY':
+    case 'RECITATION':
+      return 'content_filter';
+    default:
+      return 'unknown';
+  }
 }
 
 export const geminiProvider: AiProvider = {
@@ -69,10 +160,12 @@ export const geminiProvider: AiProvider = {
       `${GEMINI_API_BASE}/models/${request.model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,
           systemInstruction,
+          tools: toGeminiTools(request.tools),
           generationConfig: {
             temperature: request.temperature ?? 0.7,
             maxOutputTokens: request.maxOutputTokens,
@@ -92,12 +185,12 @@ export const geminiProvider: AiProvider = {
     }
 
     const data = await res.json();
-    const text =
-      data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? '').join('') ??
-      '';
+    const candidate = data.candidates?.[0];
+    const parts: GeminiPart[] | undefined = candidate?.content?.parts;
+    const toolCalls = extractToolCalls(parts);
 
     return {
-      text,
+      text: extractText(parts),
       usage: {
         inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
         outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
@@ -105,6 +198,8 @@ export const geminiProvider: AiProvider = {
       latencyMs: Date.now() - start,
       model: request.model,
       providerId: 'gemini',
+      toolCalls,
+      finishReason: geminiFinishReason(candidate?.finishReason, Boolean(toolCalls)),
     };
   },
 
@@ -116,6 +211,7 @@ export const geminiProvider: AiProvider = {
       `${GEMINI_API_BASE}/models/${request.model}:streamGenerateContent?alt=sse&key=${apiKey}`,
       {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,
@@ -179,6 +275,7 @@ export const geminiProvider: AiProvider = {
       `${GEMINI_API_BASE}/models/${request.model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,
@@ -246,7 +343,9 @@ export const geminiProvider: AiProvider = {
     }
 
     try {
-      const res = await fetch(`${GEMINI_API_BASE}/models?key=${getApiKey()}`);
+      const res = await fetch(`${GEMINI_API_BASE}/models?key=${getApiKey()}`, {
+        signal: AbortSignal.timeout(8_000),
+      });
       return {
         status: res.ok ? 'healthy' : 'degraded',
         checkedAt: new Date().toISOString(),

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useFormStatus } from 'react-dom';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -12,33 +11,32 @@ interface ChatClientProps {
   workspaceId: string;
 }
 
-function SendButton() {
-  const { pending } = useFormStatus();
-  return (
-    <button
-      type="submit"
-      disabled={pending}
-      className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
-    >
-      {pending ? 'Sending…' : 'Send'}
-    </button>
-  );
-}
-
 export default function ChatClient({ workspaceId }: ChatClientProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [taskTitle, setTaskTitle] = useState<string>('New Conversation');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
+  // Load task history on mount
   useEffect(() => {
-    scrollToBottom();
+    const loadTaskHistory = async () => {
+      try {
+        // Fetch all tasks for this workspace to allow switching
+        // (implemented as sidebar feature in Phase 3)
+        // For now, just establish the workspace context
+      } catch (err) {
+        console.error('Failed to load task history:', err);
+      }
+    };
+    loadTaskHistory();
+  }, [workspaceId]);
+
+  // Auto-scroll to latest message
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -50,6 +48,11 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
     setError(null);
+
+    // Set title from first message if this is a new task
+    if (!taskId && taskTitle === 'New Conversation') {
+      setTaskTitle(userMessage.slice(0, 50));
+    }
 
     try {
       const response = await fetch('/api/chat', {
@@ -128,8 +131,19 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
     <div className="flex h-screen flex-col">
       {/* Header */}
       <div className="border-b border-border px-6 py-4">
-        <h1 className="text-xl font-semibold">AI Command Center</h1>
-        <p className="mt-1 text-sm text-muted">What do you want your AI team to do?</p>
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <h1 className="text-xl font-semibold">AI Command Center</h1>
+            <p className="mt-1 text-sm text-muted">
+              {taskTitle === 'New Conversation' ? 'Start a new conversation' : taskTitle}
+            </p>
+          </div>
+          {taskId && (
+            <div className="text-xs text-muted">
+              Task: {taskId.slice(0, 8)}...
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Messages */}
@@ -193,7 +207,13 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
             placeholder="Ask your AI team to build, research, analyze..."
             className="flex-1 rounded-lg border border-border bg-transparent px-3 py-2 text-sm outline-none focus:border-primary disabled:opacity-50"
           />
-          <SendButton />
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {isLoading ? 'Sending…' : 'Send'}
+          </button>
         </div>
       </form>
     </div>

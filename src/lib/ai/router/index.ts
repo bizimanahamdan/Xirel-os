@@ -23,6 +23,14 @@ import { getProvider } from '../registry';
 export interface RouteRequest extends AiRequest {
   /** Providers to try, in order. First configured + successful one wins. */
   providerPriority: AiProviderId[];
+  /**
+   * Optional per-provider model override. If omitted for a given
+   * provider, that provider's default (src/lib/ai/models.ts) is used
+   * instead of `request.model` — a single model string is not valid
+   * across providers with different naming schemes. Existing callers
+   * that only set `model` are unaffected: this field is additive.
+   */
+  modelByProvider?: Partial<Record<AiProviderId, string>>;
 }
 
 export interface RouteResult extends AiResponse {
@@ -49,7 +57,8 @@ export async function routeGenerateText(request: RouteRequest): Promise<RouteRes
     }
 
     try {
-      const response = await provider.generateText(request);
+      const modelForThisProvider = request.modelByProvider?.[providerId] ?? request.model;
+      const response = await provider.generateText({ ...request, model: modelForThisProvider });
       return { ...response, failedProviders };
     } catch (err) {
       const message = err instanceof AiProviderError ? err.message : String(err);

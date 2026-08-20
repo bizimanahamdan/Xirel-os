@@ -17,8 +17,31 @@ export type AiProviderId =
   | 'openrouter';
 
 export interface AiMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Present when role is 'assistant' and the model chose to call tools instead of (or alongside) replying. */
+  toolCalls?: AiToolCall[];
+  /** Present when role is 'tool' — must match the id from the AiToolCall this message answers. */
+  toolCallId?: string;
+  /** Present when role is 'tool' — the tool's name, required by some providers alongside toolCallId. */
+  name?: string;
+}
+
+/**
+ * A tool definition passed to the model so it knows what it can call.
+ * inputSchema is a JSON Schema object (not a Zod schema) since that's
+ * the wire format every provider's function-calling API expects.
+ */
+export interface AiToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface AiToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
 }
 
 export interface AiRequest {
@@ -27,6 +50,8 @@ export interface AiRequest {
   model: string;
   temperature?: number;
   maxOutputTokens?: number;
+  /** Tools the model may call. Omit or leave empty for a plain chat request. */
+  tools?: AiToolDefinition[];
 }
 
 export interface AiUsage {
@@ -41,6 +66,9 @@ export interface AiResponse {
   latencyMs: number;
   model: string;
   providerId: AiProviderId;
+  /** Present when finishReason is 'tool_calls' — the model wants these executed before it continues. */
+  toolCalls?: AiToolCall[];
+  finishReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'unknown';
 }
 
 export interface AiChunk {
@@ -89,8 +117,20 @@ export interface AiProvider {
   /** True only if the required env vars are present. Never assume configured. */
   isConfigured(): boolean;
 
+  /**
+   * Supports `request.tools`. If the model calls a tool, the returned
+   * AiResponse has finishReason: 'tool_calls' and populated toolCalls —
+   * the caller (an Agent) must execute them and continue the conversation
+   * with role: 'tool' messages containing the results.
+   */
   generateText(request: AiRequest): Promise<AiResponse>;
 
+  /**
+   * Plain text streaming. Does NOT support request.tools — tool-calling
+   * requires the full response to inspect finishReason before continuing,
+   * so agents use generateText, not streamText. streamText remains for
+   * the direct-chat path (Phase 2) where no tools are involved.
+   */
   streamText(request: AiRequest): AsyncIterable<AiChunk>;
 
   generateStructuredOutput<T>(request: StructuredAiRequest<T>): Promise<T>;

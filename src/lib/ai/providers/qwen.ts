@@ -10,6 +10,12 @@ import type {
 } from '../types';
 import { AiProviderError } from '../types';
 import { isProviderConfigured } from '../config';
+import {
+  toOpenAiMessages,
+  toOpenAiTool,
+  fromOpenAiToolCalls,
+  fromOpenAiFinishReason,
+} from './openai-compat';
 
 /**
  * Qwen adapter. "Qwen-compatible" per the project spec means: any
@@ -51,15 +57,17 @@ export const qwenProvider: AiProvider = {
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0.7,
         max_tokens: request.maxOutputTokens,
+        tools: request.tools?.map(toOpenAiTool),
         stream: false,
       }),
     });
@@ -90,6 +98,8 @@ export const qwenProvider: AiProvider = {
       latencyMs: Date.now() - start,
       model: request.model,
       providerId: 'qwen',
+      toolCalls: fromOpenAiToolCalls(choice.message?.tool_calls),
+      finishReason: fromOpenAiFinishReason(choice.finish_reason),
     };
   },
 
@@ -98,13 +108,14 @@ export const qwenProvider: AiProvider = {
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0.7,
         max_tokens: request.maxOutputTokens,
         stream: true,
@@ -159,13 +170,14 @@ export const qwenProvider: AiProvider = {
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: toOpenAiMessages(request.messages),
         temperature: request.temperature ?? 0,
         response_format: {
           type: 'json_schema',
@@ -230,6 +242,7 @@ export const qwenProvider: AiProvider = {
       const { apiKey, baseUrl } = getConfig();
       const res = await fetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8_000),
       });
       return {
         status: res.ok ? 'healthy' : 'degraded',
