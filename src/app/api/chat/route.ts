@@ -6,6 +6,7 @@ import { messages } from '@/lib/db/schema';
 import { routeStreamText } from '@/lib/ai/router';
 import { getConfiguredProviderInstances } from '@/lib/ai/registry';
 import { getTaskMessages, createTask, updateTaskStatus } from '@/lib/tasks/queries';
+import { withTimeout } from '@/lib/db/with-timeout';
 import type { AiProviderId } from '@/lib/ai/types';
 
 /**
@@ -73,11 +74,15 @@ export async function POST(request: NextRequest) {
 
   // Store user message
   try {
-    await db.insert(messages).values({
-      taskId: currentTaskId,
-      role: 'user',
-      content: message,
-    });
+    await withTimeout(
+      db.insert(messages).values({
+        taskId: currentTaskId,
+        role: 'user',
+        content: message,
+      }),
+      10_000,
+      'store user message'
+    );
   } catch (err) {
     console.error('Failed to store user message:', err);
     return NextResponse.json({ error: 'Failed to store message' }, { status: 500 });

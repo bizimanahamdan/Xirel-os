@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { tasks, messages } from '@/lib/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import type { AiMessage } from '@/lib/ai/types';
+import { withTimeout } from '@/lib/db/with-timeout';
 
 /**
  * Load all tasks for a workspace (used by chat sidebar/history)
@@ -57,15 +58,21 @@ export async function getTaskWithMessages(taskId: string) {
 }
 
 /**
- * Get task messages for context in streaming
+ * Get task messages for context in streaming.
+ *
+ * Bounded with a 15s timeout: this runs inside /api/chat's ReadableStream
+ * before any AI provider call happens, and had no timeout at all prior
+ * to this fix — a hung/stale DB connection here would hang the entire
+ * request with zero visible error, indistinguishable from the AI
+ * provider hang this same investigation already fixed separately.
  */
 export async function getTaskMessages(taskId: string) {
   try {
-    return await db
-      .select()
-      .from(messages)
-      .where(eq(messages.taskId, taskId))
-      .orderBy(messages.createdAt);
+    return await withTimeout(
+      db.select().from(messages).where(eq(messages.taskId, taskId)).orderBy(messages.createdAt),
+      15_000,
+      'getTaskMessages'
+    );
   } catch (err) {
     console.error('Failed to fetch task messages:', err);
     return [];
@@ -121,15 +128,19 @@ export async function saveAgentMessages(taskId: string, agentMessages: AiMessage
  */
 export async function createTask(workspaceId: string, userId: string, title: string) {
   try {
-    const [newTask] = await db
-      .insert(tasks)
-      .values({
-        workspaceId,
-        userId,
-        title,
-        status: 'running',
-      })
-      .returning();
+    const [newTask] = await withTimeout(
+      db
+        .insert(tasks)
+        .values({
+          workspaceId,
+          userId,
+          title,
+          status: 'running',
+        })
+        .returning(),
+      10_000,
+      'createTask'
+    );
 
     // .returning() types its result as T[], so destructuring the first
     // element is T | undefined at the type level even though a
@@ -158,10 +169,11 @@ export async function updateTaskStatus(
   status: 'queued' | 'planning' | 'running' | 'waiting_for_approval' | 'completed' | 'failed' | 'cancelled'
 ) {
   try {
-    return await db
-      .update(tasks)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(tasks.id, taskId));
+    return await withTimeout(
+      db.update(tasks).set({ status, updatedAt: new Date() }).where(eq(tasks.id, taskId)),
+      10_000,
+      'updateTaskStatus'
+    );
   } catch (err) {
     console.error('Failed to update task status:', err);
     throw err;
