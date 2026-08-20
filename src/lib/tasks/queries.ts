@@ -26,13 +26,17 @@ export async function getWorkspaceTasks(workspaceId: string) {
  */
 export async function getTaskWithMessages(taskId: string) {
   try {
-    const task = await db
+    const taskRows = await db
       .select()
       .from(tasks)
       .where(eq(tasks.id, taskId))
       .limit(1);
 
-    if (task.length === 0) {
+    // Narrow on the extracted element itself, not taskRows.length — same
+    // pattern as the createTask and orchestrator fixes. A .length check
+    // alone doesn't narrow taskRows[0] under noUncheckedIndexedAccess.
+    const task = taskRows[0];
+    if (!task) {
       return null;
     }
 
@@ -43,7 +47,7 @@ export async function getTaskWithMessages(taskId: string) {
       .orderBy(messages.createdAt);
 
     return {
-      task: task[0],
+      task,
       messages: taskMessages,
     };
   } catch (err) {

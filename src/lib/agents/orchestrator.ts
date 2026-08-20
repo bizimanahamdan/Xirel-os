@@ -188,7 +188,14 @@ export async function runOrchestrator(
     throw new Error('Caller is not a member of this workspace — cannot run agent.');
   }
 
-  if (request.providerPriority.length === 0) {
+  // Extract and narrow here (not just check .length) — TypeScript can't
+  // infer that providerPriority[0] is defined from a separate .length
+  // check at the point it's actually indexed later. Same narrowing
+  // pattern as the array-element fix in chat-client.tsx: check the
+  // value itself, not a proxy for it. Hoisted out of the loop since
+  // providerPriority doesn't change across iterations.
+  const primaryProvider = request.providerPriority[0];
+  if (!primaryProvider) {
     throw new Error('runOrchestrator: providerPriority was empty — no provider to route to.');
   }
 
@@ -197,10 +204,9 @@ export async function runOrchestrator(
 
   const conversation: AiMessage[] = [...request.messages];
   const newMessages: AiMessage[] = [];
-  let lastProviderId: AiProviderId = request.providerPriority[0] ?? 'openrouter';
+  let lastProviderId: AiProviderId = primaryProvider;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    const primaryProvider = request.providerPriority[0];
     const routeRequest: RouteRequest = {
       messages: conversation,
       // `model` is required by AiRequest but is only actually used when a
