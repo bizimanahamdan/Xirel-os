@@ -15,6 +15,7 @@ import {
   toOpenAiTool,
   fromOpenAiToolCalls,
   fromOpenAiFinishReason,
+  PROVIDER_TIMEOUT_MS,
 } from './openai-compat';
 
 /**
@@ -57,7 +58,7 @@ export const openrouterProvider: AiProvider = {
 
     const res = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -110,7 +111,7 @@ export const openrouterProvider: AiProvider = {
 
     const res = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -174,7 +175,7 @@ export const openrouterProvider: AiProvider = {
 
     const res = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',

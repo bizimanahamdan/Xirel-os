@@ -7,6 +7,33 @@ import type { AiMessage, AiResponse, AiToolCall, AiToolDefinition } from '../typ
  * other on tool-calling behavior.
  */
 
+/**
+ * Per-attempt timeout for AI provider calls, used by generateText/
+ * streamText/generateStructuredOutput across Groq, OpenRouter, Qwen,
+ * and Gemini (Gemini keeps its own copy since it doesn't import this
+ * file, to avoid a cross-shape dependency for one constant — kept in
+ * sync manually, see gemini.ts).
+ *
+ * This value is NOT independent — it's sized against the Vercel
+ * serverless function's maxDuration (see src/app/api/chat/route.ts,
+ * currently 60s) and the DB call timeouts in the same request's hot
+ * path (src/lib/tasks/queries.ts, src/app/api/chat/route.ts).
+ * routeGenerateText/routeStreamText can fall back across up to 3
+ * providers in one request, so the worst case for /api/chat is:
+ *   createTask(5s) + insert user msg(5s) + getTaskMessages(6s)
+ *   + 3 × PROVIDER_TIMEOUT_MS(12s) = 36s
+ *   + updateTaskStatus(4s)
+ *   = 56s, against a 60s maxDuration — ~4s headroom.
+ * This must stay comfortably under maxDuration, or Vercel kills the
+ * function before any of this codebase's own error handling can run
+ * — which is exactly the silent-hang bug these timeouts were tuned to
+ * close. If you raise maxDuration, raise this in proportion (and the
+ * Gemini copy alongside it) — but re-run the arithmetic above rather
+ * than guessing; a stale mental model of "the timeouts are generous"
+ * is how they drifted out of budget the first time.
+ */
+export const PROVIDER_TIMEOUT_MS = 12_000;
+
 export function toOpenAiMessages(messages: AiMessage[]) {
   return messages.map((m) => {
     if (m.role === 'tool') {

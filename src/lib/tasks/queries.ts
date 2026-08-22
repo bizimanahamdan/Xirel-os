@@ -60,17 +60,22 @@ export async function getTaskWithMessages(taskId: string) {
 /**
  * Get task messages for context in streaming.
  *
- * Bounded with a 15s timeout: this runs inside /api/chat's ReadableStream
- * before any AI provider call happens, and had no timeout at all prior
- * to this fix — a hung/stale DB connection here would hang the entire
- * request with zero visible error, indistinguishable from the AI
- * provider hang this same investigation already fixed separately.
+ * Bounded with a 6s timeout (tightened from an initial 15s once the
+ * full request budget was worked out — see PROVIDER_TIMEOUT_MS in
+ * src/lib/ai/providers/openai-compat.ts for the shared-budget math):
+ * this runs inside /api/chat's ReadableStream before any AI provider
+ * call happens, and had no timeout at all prior to this fix — a
+ * hung/stale DB connection here would hang the entire request with
+ * zero visible error, indistinguishable from the AI provider hang
+ * this same investigation already fixed separately. A real query
+ * here should take single-digit milliseconds; 6s is already generous
+ * slack for a legitimately slow-but-working query, not a tight cutoff.
  */
 export async function getTaskMessages(taskId: string) {
   try {
     return await withTimeout(
       db.select().from(messages).where(eq(messages.taskId, taskId)).orderBy(messages.createdAt),
-      15_000,
+      6_000,
       'getTaskMessages'
     );
   } catch (err) {
@@ -138,7 +143,7 @@ export async function createTask(workspaceId: string, userId: string, title: str
           status: 'running',
         })
         .returning(),
-      10_000,
+      5_000,
       'createTask'
     );
 
@@ -171,7 +176,7 @@ export async function updateTaskStatus(
   try {
     return await withTimeout(
       db.update(tasks).set({ status, updatedAt: new Date() }).where(eq(tasks.id, taskId)),
-      10_000,
+      4_000,
       'updateTaskStatus'
     );
   } catch (err) {

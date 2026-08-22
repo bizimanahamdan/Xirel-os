@@ -15,6 +15,16 @@ import { AiProviderError } from '../types';
 import { isProviderConfigured } from '../config';
 
 /**
+ * Kept as a separate constant from PROVIDER_TIMEOUT_MS (openai-compat.ts)
+ * since Gemini doesn't share that file's wire format and importing it
+ * just for one constant seemed like the wrong dependency to introduce.
+ * Must be changed together with PROVIDER_TIMEOUT_MS — see that
+ * constant's comment for why this value is what it is (sized against
+ * the request's overall Vercel maxDuration budget, not arbitrary).
+ */
+const GEMINI_TIMEOUT_MS = 12_000;
+
+/**
  * Gemini adapter, using Google's Generative Language REST API directly
  * (no SDK dependency, to keep the provider layer lightweight).
  *
@@ -160,7 +170,7 @@ export const geminiProvider: AiProvider = {
       `${GEMINI_API_BASE}/models/${request.model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,
@@ -211,7 +221,7 @@ export const geminiProvider: AiProvider = {
       `${GEMINI_API_BASE}/models/${request.model}:streamGenerateContent?alt=sse&key=${apiKey}`,
       {
         method: 'POST',
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,
@@ -275,7 +285,7 @@ export const geminiProvider: AiProvider = {
       `${GEMINI_API_BASE}/models/${request.model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,

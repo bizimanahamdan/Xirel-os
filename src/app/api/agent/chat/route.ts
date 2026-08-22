@@ -15,6 +15,26 @@ import {
 import type { AiProviderId } from '@/lib/ai/types';
 
 /**
+ * See src/app/api/chat/route.ts's maxDuration comment for why this
+ * exists at all (Vercel's Hobby default is 10s).
+ *
+ * UNRESOLVED GAP, flagged rather than silently left: runOrchestrator
+ * (src/lib/agents/orchestrator.ts) can loop up to MAX_ITERATIONS (6)
+ * times, and each iteration can fall back across up to 3 providers at
+ * PROVIDER_TIMEOUT_MS (12s) each. Theoretical worst case is
+ * 6 × 3 × 12s = 216s — far beyond what's practical to set here. This
+ * endpoint was already documented as untested against live systems
+ * (PHASE_3_AGENT_FRAMEWORK.md); this is a second, related reason it
+ * isn't production-ready as-is. A real fix needs an overall deadline
+ * threaded through runOrchestrator (each attempt gets whatever time
+ * remains in the request's budget, not its own fresh timeout) rather
+ * than more tuning of independent per-call numbers — out of scope for
+ * this pass, which is focused on the actively-reported /api/chat hang.
+ * 60s is a reasonable stopgap for now, not a real fix for this gap.
+ */
+export const maxDuration = 60;
+
+/**
  * POST /api/agent/chat
  *
  * Phase 3: runs the Orchestrator Agent (tool-calling capable) instead of

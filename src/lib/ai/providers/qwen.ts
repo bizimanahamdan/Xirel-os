@@ -15,6 +15,7 @@ import {
   toOpenAiTool,
   fromOpenAiToolCalls,
   fromOpenAiFinishReason,
+  PROVIDER_TIMEOUT_MS,
 } from './openai-compat';
 
 /**
@@ -57,7 +58,7 @@ export const qwenProvider: AiProvider = {
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -108,7 +109,7 @@ export const qwenProvider: AiProvider = {
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -170,7 +171,7 @@ export const qwenProvider: AiProvider = {
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',

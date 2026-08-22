@@ -10,6 +10,18 @@ import { withTimeout } from '@/lib/db/with-timeout';
 import type { AiProviderId } from '@/lib/ai/types';
 
 /**
+ * Vercel's default serverless function timeout is 10s on the Hobby
+ * plan — shorter than this route's own DB timeouts (10-15s) and far
+ * shorter than the AI provider timeout (30s, up to 3 fallback
+ * attempts). Without this, the platform kills the function before any
+ * of this file's own timeout/error-handling logic gets a chance to
+ * run, which surfaces to the client as a hang with no error rather
+ * than a clean failure. 60s is the max configurable on Hobby; raise
+ * further if you're on Pro and provider responses are still cut off.
+ */
+export const maxDuration = 60;
+
+/**
  * POST /api/chat
  *
  * Streaming chat endpoint. Accepts a message, routes it to an AI provider,
@@ -80,7 +92,7 @@ export async function POST(request: NextRequest) {
         role: 'user',
         content: message,
       }),
-      10_000,
+      5_000,
       'store user message'
     );
   } catch (err) {

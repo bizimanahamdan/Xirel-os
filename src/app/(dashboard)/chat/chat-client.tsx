@@ -54,6 +54,22 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
       setTaskTitle(userMessage.slice(0, 50));
     }
 
+    // Bounds the browser's own wait for the entire exchange (connecting
+    // AND streaming the response), independent of anything the server
+    // does. A single AbortSignal on fetch() covers body-reading too, not
+    // just the initial connection — so one timer for the whole lifecycle
+    // is correct here; there's no need to re-arm it once headers arrive.
+    // Without this, if the connection ever goes silent mid-stream (rather
+    // than closing cleanly or erroring — a real possibility if the
+    // serverless platform kills the backend function while a response is
+    // in flight) reader.read() below can hang forever with nothing to
+    // catch it, even though the existing finally block correctly clears
+    // isLoading on every OTHER exit path. 65s gives ~5s slack over the
+    // server's own 60s maxDuration (see /api/chat/route.ts) so a
+    // legitimate full-duration server response isn't cut off first.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 65_000);
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -63,6 +79,7 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
           message: userMessage,
           workspaceId,
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -120,9 +137,14 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
-      setError(message);
+      setError(
+        err instanceof DOMException && err.name === 'AbortError'
+          ? 'Request timed out. The AI provider may be slow or unreachable — please try again.'
+          : message
+      );
       console.error('Chat error:', err);
     } finally {
+      clearTimeout(timeoutId);
       setIsLoading(false);
     }
   };

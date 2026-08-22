@@ -15,6 +15,7 @@ import {
   toOpenAiTool,
   fromOpenAiToolCalls,
   fromOpenAiFinishReason,
+  PROVIDER_TIMEOUT_MS,
 } from './openai-compat';
 
 /**
@@ -50,7 +51,7 @@ export const groqProvider: AiProvider = {
 
     const res = await fetch(`${GROQ_API_BASE}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -101,7 +102,7 @@ export const groqProvider: AiProvider = {
 
     const res = await fetch(`${GROQ_API_BASE}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -169,7 +170,7 @@ export const groqProvider: AiProvider = {
 
     const res = await fetch(`${GROQ_API_BASE}/chat/completions`, {
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
