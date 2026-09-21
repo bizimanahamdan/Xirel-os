@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { messages } from '@/lib/db/schema';
 import { routeStreamText } from '@/lib/ai/router';
 import { getConfiguredProviderInstances } from '@/lib/ai/registry';
+import { getDefaultModel } from '@/lib/ai/models';
 import { getTaskMessages, createTask, updateTaskStatus } from '@/lib/tasks/queries';
 import { withTimeout } from '@/lib/db/with-timeout';
 import type { AiProviderId } from '@/lib/ai/types';
@@ -130,13 +131,31 @@ export async function POST(request: NextRequest) {
           throw new Error('No AI providers configured');
         }
 
+        // Resolve the model PER PROVIDER instead of sending one hardcoded
+        // string everywhere. "openai/gpt-4-turbo" is an OpenRouter-qualified
+        // id — forwarding it verbatim to Gemini produced
+        // ".../v1beta/models/openai/gpt-4-turbo:streamGenerateContent" →
+        // 404 Not Found, which is the production failure this file shipped
+        // with. Each provider now gets its own valid default
+        // (src/lib/ai/models.ts), the same resolution pattern the
+        // orchestrator path (src/lib/agents/orchestrator.ts) already uses.
+        // Per-workspace model configuration can layer on top of this later.
+        const modelByProvider = Object.fromEntries(
+          providers.map((p) => [p, getDefaultModel(p)])
+        ) as Partial<Record<AiProviderId, string>>;
+
         // Route to provider with streaming
         let fullResponse = '';
         let streamStarted = false;
 
         for await (const chunk of routeStreamText({
           messages: aiMessages,
-          model: 'openai/gpt-4-turbo', // Default; make configurable per workspace later
+          // `model` is required by AiRequest but is only actually used if a
+          // provider has no modelByProvider entry — every candidate above
+          // has one, so this is just a type-safe placeholder (same approach
+          // as the orchestrator).
+          model: getDefaultModel(providers[0] ?? 'openrouter'),
+          modelByProvider,
           providerPriority: providers,
           temperature: 0.7,
         })) {

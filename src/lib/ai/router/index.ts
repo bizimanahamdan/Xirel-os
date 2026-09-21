@@ -92,12 +92,28 @@ export async function* routeStreamText(
     const provider = getProvider(providerId);
 
     if (!provider.isConfigured()) {
+      console.warn(`Provider ${providerId} is not configured — skipping.`);
       continue;
     }
 
     try {
-      for await (const chunk of provider.streamText(request)) {
-        yield { text: chunk.text, providerId };
+      // Resolve the model PER PROVIDER, exactly like routeGenerateText
+      // below. A bare request.model (e.g. an OpenRouter-qualified name like
+      // "openai/gpt-4-turbo") is meaningless — or an outright 404 — when
+      // forwarded to Gemini/Groq/Qwen, whose model ids follow different
+      // schemes. Passing request through unmodified here was the root cause
+      // of "Gemini stream request failed: 404 Not Found" in production:
+      // Gemini received "openai/gpt-4-turbo" interpolated into
+      // /v1beta/models/{model}:streamGenerateContent, which is not a valid
+      // Gemini model path.
+      const modelForThisProvider = request.modelByProvider?.[providerId] ?? request.model;
+      for await (const chunk of provider.streamText({ ...request, model: modelForThisProvider })) {
+        // Adapters end their stream with an empty {text: '', done: true}
+        // sentinel — don't forward it, or /api/chat enqueues a junk SSE
+        // event that clients must then ignore.
+        if (chunk.text) {
+          yield { text: chunk.text, providerId };
+        }
       }
       return;
     } catch (err) {

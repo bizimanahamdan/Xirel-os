@@ -6,24 +6,37 @@ import type { AiProviderId } from './types';
  *
  * Why this file exists: a single "model" string cannot mean the same
  * thing across providers — OpenRouter uses qualified names like
- * "openai/gpt-4-turbo", Groq and Gemini use their own unqualified model
+ * "openai/gpt-4o-mini", Groq and Gemini use their own unqualified model
  * ids, and Qwen's valid ids depend entirely on which host QWEN_BASE_URL
  * points at. Code that sends one hardcoded model string to whichever
  * provider the router happens to fall back to will silently send the
  * wrong model id to at least some providers. This registry exists so
- * new code (the agent/orchestrator path) resolves a model per-provider
- * instead of repeating that mistake.
+ * the router resolves a model PER PROVIDER (via modelByProvider) instead
+ * of repeating that mistake — sending "openai/gpt-4-turbo" to Gemini was
+ * exactly the production 404 this file's comments warn about.
  *
- * UNVERIFIED like the adapters themselves: these are current model ids
- * per each provider's public docs as of this codebase's writing, not
- * confirmed against a live call in this environment. Re-check against
- * the provider's model list before relying on this in production —
- * providers deprecate and rename models regularly.
+ * VERIFIED 2026-09-21 against each provider's live deprecation pages:
+ *   - Gemini: https://ai.google.dev/gemini-api/docs/deprecations
+ *     (gemini-2.0-flash was SHUT DOWN 2026-06-01 — calls to it 404.)
+ *   - Groq: https://console.groq.com/docs/deprecations
+ *     (llama-3.3-70b-versatile was SHUT DOWN 2026-08-16; openai/gpt-oss-120b
+ *     is Groq's officially recommended replacement.)
+ *   - OpenRouter: https://openrouter.ai/api/v1/models (openai/gpt-4-turbo
+ *     still served today but its upstream id is scheduled for removal on
+ *     2026-10-23 per https://platform.openai.com/docs/deprecations, so the
+ *     default moves to the long-lived openai/gpt-4o-mini.)
+ * Providers deprecate models regularly — RE-VERIFY these ids against the
+ * pages above whenever chat responses start failing with 404/"model not
+ * found", rather than assuming the code regressed.
+ *
+ * Each default is overridable without a code change via env var, so a
+ * future deprecation can be handled by updating the environment (e.g.
+ * Vercel project settings) alone.
  */
 const DEFAULT_MODELS: Record<AiProviderId, string> = {
-  groq: 'llama-3.3-70b-versatile',
-  gemini: 'gemini-2.0-flash',
-  openrouter: 'openai/gpt-4-turbo',
+  groq: process.env.GROQ_DEFAULT_MODEL || 'openai/gpt-oss-120b',
+  gemini: process.env.GEMINI_DEFAULT_MODEL || 'gemini-2.5-flash',
+  openrouter: process.env.OPENROUTER_DEFAULT_MODEL || 'openai/gpt-4o-mini',
   qwen: process.env.QWEN_DEFAULT_MODEL || 'qwen-plus',
   moonshot: 'moonshot-v1-8k',
   openai: 'gpt-4-turbo',
