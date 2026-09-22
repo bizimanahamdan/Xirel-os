@@ -101,75 +101,131 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to store message' }, { status: 500 });
   }
 
-  // Stream response
+  // Load conversation history BEFORE any response is returned, so a
+  // history failure is a clean non-200 instead of an error event inside
+  // an already-started 200 stream.
+  let messageHistory: Awaited<ReturnType<typeof getTaskMessages>>;
+  try {
+    messageHistory = await getTaskMessages(currentTaskId);
+  } catch (err) {
+    console.error('Failed to load message history:', err);
+    try {
+      await updateTaskStatus(currentTaskId, 'failed');
+    } catch {
+      // Silent fail — client gets the 500 below regardless.
+    }
+    return NextResponse.json({ error: 'Failed to load conversation history' }, { status: 500 });
+  }
+
+  const aiMessages = messageHistory.map((m) => ({
+    role: m.role as 'system' | 'user' | 'assistant',
+    content: m.content,
+  }));
+
+  // Determine provider priority — validate that these are real provider IDs
+  let providers: AiProviderId[] = [];
+  if (providerPriority && Array.isArray(providerPriority)) {
+    providers = providerPriority.filter((p) =>
+      ['gemini', 'groq', 'qwen', 'moonshot', 'openai', 'anthropic', 'openrouter'].includes(
+        p
+      )
+    ) as AiProviderId[];
+  }
+
+  if (providers.length === 0) {
+    providers = getConfiguredProviderInstances().map((p) => p.id);
+  }
+
+  if (providers.length === 0) {
+    try {
+      await updateTaskStatus(currentTaskId, 'failed');
+    } catch {
+      // Silent fail — client gets the 503 below regardless.
+    }
+    return NextResponse.json(
+      { error: 'No AI providers configured. Add at least one provider API key.' },
+      { status: 503 }
+    );
+  }
+
+  // Resolve the model PER PROVIDER instead of sending one hardcoded
+  // string everywhere. "openai/gpt-4-turbo" is an OpenRouter-qualified
+  // id — forwarding it verbatim to Gemini produced
+  // ".../v1beta/models/openai/gpt-4-turbo:streamGenerateContent" →
+  // 404 Not Found, which is the production failure this file shipped
+  // with. Each provider now gets its own valid default
+  // (src/lib/ai/models.ts), the same resolution pattern the
+  // orchestrator path (src/lib/agents/orchestrator.ts) already uses.
+  // Per-workspace model configuration can layer on top of this later.
+  const modelByProvider = Object.fromEntries(
+    providers.map((p) => [p, getDefaultModel(p)])
+  ) as Partial<Record<AiProviderId, string>>;
+
+  // Hold the HTTP response until the FIRST provider chunk arrives (or
+  // every provider fails). A streaming 200 locks in the status line —
+  // previously a total provider failure was still answered with HTTP 200
+  // and the error buried in the body, which is why production logged
+  // "Provider gemini stream failed: 404" next to a POST /api/chat → 200.
+  // Now: at least one provider produced text → genuine 200 SSE stream
+  // (first chunk already in hand); every provider failed → clean non-200
+  // JSON error the client can display. The router itself has already
+  // tried the full fallback chain (gemini → groq → openrouter → …) by
+  // the time we get here.
+  const routed = routeStreamText({
+    messages: aiMessages,
+    // `model` is required by AiRequest but is only actually used if a
+    // provider has no modelByProvider entry — every candidate above
+    // has one, so this is just a type-safe placeholder (same approach
+    // as the orchestrator).
+    model: getDefaultModel(providers[0] ?? 'openrouter'),
+    modelByProvider,
+    providerPriority: providers,
+    temperature: 0.7,
+  })[Symbol.asyncIterator]();
+
+  let firstChunk: { text: string; providerId: AiProviderId };
+  try {
+    const first = await routed.next();
+    if (first.done) {
+      throw new Error('No streaming response received from any provider');
+    }
+    firstChunk = first.value;
+  } catch (err) {
+    console.error('Stream error:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    try {
+      await updateTaskStatus(currentTaskId, 'failed');
+    } catch {
+      // Silent fail — client already got the error status.
+    }
+    return NextResponse.json({ error: errorMessage }, { status: 502 });
+  }
+
+  // At least one provider is streaming — send the SSE response,
+  // continuing from the router iterator (first chunk included).
+  const encoder = new TextEncoder();
   const encodedStream = new ReadableStream({
     async start(controller) {
+      let fullResponse = firstChunk.text;
       try {
-        // Fetch existing messages for context
-        const messageHistory = await getTaskMessages(currentTaskId);
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              text: firstChunk.text,
+              provider: firstChunk.providerId,
+            })}\n\n`
+          )
+        );
 
-        const aiMessages = messageHistory.map((m) => ({
-          role: m.role as 'system' | 'user' | 'assistant',
-          content: m.content,
-        }));
-
-        // Determine provider priority — validate that these are real provider IDs
-        let providers: AiProviderId[] = [];
-        if (providerPriority && Array.isArray(providerPriority)) {
-          providers = providerPriority.filter((p) =>
-            ['gemini', 'groq', 'qwen', 'moonshot', 'openai', 'anthropic', 'openrouter'].includes(
-              p
-            )
-          ) as AiProviderId[];
-        }
-
-        if (providers.length === 0) {
-          providers = getConfiguredProviderInstances().map((p) => p.id);
-        }
-
-        if (providers.length === 0) {
-          throw new Error('No AI providers configured');
-        }
-
-        // Resolve the model PER PROVIDER instead of sending one hardcoded
-        // string everywhere. "openai/gpt-4-turbo" is an OpenRouter-qualified
-        // id — forwarding it verbatim to Gemini produced
-        // ".../v1beta/models/openai/gpt-4-turbo:streamGenerateContent" →
-        // 404 Not Found, which is the production failure this file shipped
-        // with. Each provider now gets its own valid default
-        // (src/lib/ai/models.ts), the same resolution pattern the
-        // orchestrator path (src/lib/agents/orchestrator.ts) already uses.
-        // Per-workspace model configuration can layer on top of this later.
-        const modelByProvider = Object.fromEntries(
-          providers.map((p) => [p, getDefaultModel(p)])
-        ) as Partial<Record<AiProviderId, string>>;
-
-        // Route to provider with streaming
-        let fullResponse = '';
-        let streamStarted = false;
-
-        for await (const chunk of routeStreamText({
-          messages: aiMessages,
-          // `model` is required by AiRequest but is only actually used if a
-          // provider has no modelByProvider entry — every candidate above
-          // has one, so this is just a type-safe placeholder (same approach
-          // as the orchestrator).
-          model: getDefaultModel(providers[0] ?? 'openrouter'),
-          modelByProvider,
-          providerPriority: providers,
-          temperature: 0.7,
-        })) {
-          streamStarted = true;
-          fullResponse += chunk.text;
+        while (true) {
+          const { done, value } = await routed.next();
+          if (done) break;
+          fullResponse += value.text;
           controller.enqueue(
-            new TextEncoder().encode(
-              `data: ${JSON.stringify({ text: chunk.text, provider: chunk.providerId })}\n\n`
+            encoder.encode(
+              `data: ${JSON.stringify({ text: value.text, provider: value.providerId })}\n\n`
             )
           );
-        }
-
-        if (!streamStarted) {
-          throw new Error('No streaming response received from any provider');
         }
 
         // Store assistant response
@@ -182,15 +238,17 @@ export async function POST(request: NextRequest) {
         // Update task status
         await updateTaskStatus(currentTaskId, 'completed');
 
-        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       } catch (err) {
+        // Failure AFTER the response started (provider died mid-stream or
+        // persisting the response failed) — the 200 status can no longer
+        // change, so report the failure as a terminal SSE event the client
+        // surfaces visibly.
         console.error('Stream error:', err);
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';
         controller.enqueue(
-          new TextEncoder().encode(
-            `data: ${JSON.stringify({ error: errorMessage })}\n\n`
-          )
+          encoder.encode(`data: ${JSON.stringify({ error: errorMessage })}\n\n`)
         );
         controller.close();
 
