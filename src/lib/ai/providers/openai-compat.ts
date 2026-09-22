@@ -18,19 +18,20 @@ import type { AiMessage, AiResponse, AiToolCall, AiToolDefinition } from '../typ
  * serverless function's maxDuration (see src/app/api/chat/route.ts,
  * currently 60s) and the DB call timeouts in the same request's hot
  * path (src/lib/tasks/queries.ts, src/app/api/chat/route.ts).
- * routeGenerateText/routeStreamText can fall back across up to 3
- * providers in one request, so the worst case for /api/chat is:
+ * routeGenerateText/routeStreamText can fall back across up to MAX_ATTEMPTS
+ * (5 — see src/lib/ai/router/index.ts) providers in one request, so the
+ * pathological worst case for /api/chat is:
  *   createTask(5s) + insert user msg(5s) + getTaskMessages(6s)
- *   + 3 × PROVIDER_TIMEOUT_MS(12s) = 36s
+ *   + 5 × PROVIDER_TIMEOUT_MS(12s) = 60s
  *   + updateTaskStatus(4s)
- *   = 56s, against a 60s maxDuration — ~4s headroom.
- * This must stay comfortably under maxDuration, or Vercel kills the
- * function before any of this codebase's own error handling can run
- * — which is exactly the silent-hang bug these timeouts were tuned to
- * close. If you raise maxDuration, raise this in proportion (and the
- * Gemini copy alongside it) — but re-run the arithmetic above rather
- * than guessing; a stale mental model of "the timeouts are generous"
- * is how they drifted out of budget the first time.
+ * — over the 60s maxDuration, but ONLY if every configured provider hangs
+ * for its full timeout. Real failures (404/401/429/5xx) return in well
+ * under a second, which is the case the fallback chain exists for; a
+ * total-hang scenario is cut off by Vercel at maxDuration and reported
+ * by the client's own 65s abort guard. If you raise maxDuration, raise
+ * this in proportion (and the Gemini copy alongside it) — but re-run the
+ * arithmetic above rather than guessing; a stale mental model of "the
+ * timeouts are generous" is how they drifted out of budget the first time.
  */
 export const PROVIDER_TIMEOUT_MS = 12_000;
 

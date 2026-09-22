@@ -28,10 +28,13 @@ const GEMINI_TIMEOUT_MS = 12_000;
  * Gemini adapter, using Google's Generative Language REST API directly
  * (no SDK dependency, to keep the provider layer lightweight).
  *
- * UNVERIFIED: written from documented API shape, not executed against
- * the live endpoint in this environment (no network access at build
- * time). Before relying on this in production: run one real request
- * per method and confirm against https://ai.google.dev/api.
+ * WIRE FORMAT VERIFIED 2026-09-22 against https://ai.google.dev/api —
+ * the endpoint paths, auth header, request body fields and SSE stream
+ * shape below are the currently documented ones (see the verification
+ * note above GEMINI_API_BASE). What still can't be exercised from this
+ * environment is a LIVE request with a real key — confirm that once in
+ * production via /api/ai/health with real credentials before routing
+ * significant traffic.
  *
  * Gemini has no separate "system" role — system instructions are sent
  * via a dedicated `systemInstruction` field, so we split messages here.
@@ -39,13 +42,27 @@ const GEMINI_TIMEOUT_MS = 12_000;
  * Function calling: request uses `tools: [{ functionDeclarations }]`;
  * responses may contain `functionCall` parts instead of/alongside text;
  * results are sent back as a `function`-role content with a
- * `functionResponse` part. This shape is ESPECIALLY unverified — Gemini's
- * function-calling multi-turn convention has changed across API versions.
- * Confirm against https://ai.google.dev/gemini-api/docs/function-calling
- * before routing agent tool calls through Gemini in production.
+ * `functionResponse` part. Re-confirm this multi-turn convention
+ * against https://ai.google.dev/gemini-api/docs/function-calling before
+ * relying on agent tool calls through Gemini in production.
  */
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+/**
+ * VERIFIED 2026-09-22 against https://ai.google.dev/api/generate-content
+ * and the current REST streaming examples:
+ *   - Endpoint  POST {base}/models/{model}:generateContent
+ *   - Streaming POST {base}/models/{model}:streamGenerateContent?alt=sse
+ *     (alt=sse = server-sent events, one GenerateContentResponse JSON per
+ *     `data:` line — exactly what the SSE parser below consumes)
+ *   - Auth      x-goog-api-key header (the `?key=` query param also works,
+ *     but URLs get recorded in proxy/platform logs, so the header is used
+ *     to keep the key out of logs)
+ * The v1beta path is the currently documented REST generation API — do
+ * not confuse it with the separate higher-level v1beta/interactions API,
+ * which is a different abstraction this adapter deliberately doesn't use.
+ */
 
 function getApiKey(): string {
   const key = process.env.GEMINI_API_KEY;
@@ -53,6 +70,13 @@ function getApiKey(): string {
     throw new AiProviderError('GEMINI_API_KEY is not set', 'gemini', undefined, false);
   }
   return key;
+}
+
+function geminiHeaders(apiKey: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': apiKey,
+  };
 }
 
 function toGeminiContents(messages: AiMessage[]) {
@@ -115,10 +139,20 @@ function toGeminiTools(tools: AiToolDefinition[] | undefined) {
 interface GeminiPart {
   text?: string;
   functionCall?: { name: string; args: Record<string, unknown> };
+  /**
+   * Thinking models (2.5 series and all Gemini 3.x) can include
+   * thought-summary parts in their response. These carry intermediate
+   * reasoning, NOT the answer — they must be excluded from extracted
+   * text or reasoning text leaks into the chat UI.
+   */
+  thought?: boolean;
 }
 
 function extractText(parts: GeminiPart[] | undefined): string {
-  return parts?.map((p) => p.text ?? '').join('') ?? '';
+  return parts
+    ?.filter((p) => !p.thought)
+    .map((p) => p.text ?? '')
+    .join('') ?? '';
 }
 
 function extractToolCalls(parts: GeminiPart[] | undefined): AiToolCall[] | undefined {
@@ -167,11 +201,11 @@ export const geminiProvider: AiProvider = {
     const { systemInstruction, contents } = toGeminiContents(request.messages);
 
     const res = await fetch(
-      `${GEMINI_API_BASE}/models/${request.model}:generateContent?key=${apiKey}`,
+      `${GEMINI_API_BASE}/models/${request.model}:generateContent`,
       {
         method: 'POST',
         signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-        headers: { 'Content-Type': 'application/json' },
+        headers: geminiHeaders(apiKey),
         body: JSON.stringify({
           contents,
           systemInstruction,
@@ -218,11 +252,11 @@ export const geminiProvider: AiProvider = {
     const { systemInstruction, contents } = toGeminiContents(request.messages);
 
     const res = await fetch(
-      `${GEMINI_API_BASE}/models/${request.model}:streamGenerateContent?alt=sse&key=${apiKey}`,
+      `${GEMINI_API_BASE}/models/${request.model}:streamGenerateContent?alt=sse`,
       {
         method: 'POST',
         signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-        headers: { 'Content-Type': 'application/json' },
+        headers: geminiHeaders(apiKey),
         body: JSON.stringify({
           contents,
           systemInstruction,
@@ -265,7 +299,8 @@ export const geminiProvider: AiProvider = {
           const parsed = JSON.parse(payload);
           const text =
             parsed.candidates?.[0]?.content?.parts
-              ?.map((p: { text?: string }) => p.text ?? '')
+              ?.filter((p: { thought?: boolean }) => !p.thought)
+              .map((p: { text?: string }) => p.text ?? '')
               .join('') ?? '';
           if (text) yield { text, done: false };
         } catch {
@@ -282,11 +317,11 @@ export const geminiProvider: AiProvider = {
     const { systemInstruction, contents } = toGeminiContents(request.messages);
 
     const res = await fetch(
-      `${GEMINI_API_BASE}/models/${request.model}:generateContent?key=${apiKey}`,
+      `${GEMINI_API_BASE}/models/${request.model}:generateContent`,
       {
         method: 'POST',
         signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-        headers: { 'Content-Type': 'application/json' },
+        headers: geminiHeaders(apiKey),
         body: JSON.stringify({
           contents,
           systemInstruction,
@@ -353,7 +388,8 @@ export const geminiProvider: AiProvider = {
     }
 
     try {
-      const res = await fetch(`${GEMINI_API_BASE}/models?key=${getApiKey()}`, {
+      const res = await fetch(`${GEMINI_API_BASE}/models`, {
+        headers: geminiHeaders(getApiKey()),
         signal: AbortSignal.timeout(8_000),
       });
       return {
