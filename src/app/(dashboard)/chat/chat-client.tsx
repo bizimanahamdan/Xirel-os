@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { readChatStream } from '@/lib/chat/chat-stream';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -91,48 +92,64 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
         throw new Error('No response body');
       }
 
+      // The assistant bubble is only created once actual text arrives —
+      // if the provider fails before producing anything, the user gets a
+      // visible error instead of a permanently-empty message bubble.
       let fullResponse = '';
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      let assistantBubbleAdded = false;
 
-      // Initialize assistant message
-      setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-
-          if (data === '[DONE]') continue;
-
-          try {
-            const parsed = JSON.parse(data);
-
-            if (parsed.error) {
-              throw new Error(parsed.error);
-            }
-
-            if (parsed.text) {
-              fullResponse += parsed.text;
-              setMessages((prev) => {
-                const updated = [...prev];
-                const lastMessage = updated[updated.length - 1];
-                // Only update if the last message is an assistant message
-                if (lastMessage && lastMessage.role === 'assistant') {
-                  lastMessage.content = fullResponse;
-                }
-                return updated;
-              });
-            }
-          } catch {
-            // Ignore parse errors for partial chunks
+      const updateAssistant = () => {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastMessage = updated[updated.length - 1];
+          // Only update if the last message is an assistant message
+          if (lastMessage && lastMessage.role === 'assistant') {
+            updated[updated.length - 1] = { ...lastMessage, content: fullResponse };
           }
+          return updated;
+        });
+      };
+
+      // Provider failures arrive as `data: {"error": ...}` events INSIDE a
+      // 200 SSE response (the stream has started, so the status code can't
+      // change). These MUST surface — the previous code threw inside its
+      // own parse-try/catch, which silently swallowed them and left the
+      // user staring at an empty bubble with no explanation.
+      let streamErrorMessage: string | null = null;
+
+      await readChatStream(response.body, {
+        onText: (text) => {
+          fullResponse += text;
+          if (!assistantBubbleAdded) {
+            assistantBubbleAdded = true;
+            setMessages((prev) => [...prev, { role: 'assistant', content: fullResponse }]);
+          } else {
+            updateAssistant();
+          }
+        },
+        onError: (message) => {
+          streamErrorMessage = message;
+        },
+      });
+
+      if (streamErrorMessage) {
+        // Nothing streamed — drop the placeholder bubble so the error is
+        // the only visible outcome.
+        if (!assistantBubbleAdded) {
+          setError(streamErrorMessage);
+        } else if (!fullResponse) {
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastMessage = updated[updated.length - 1];
+            if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.content) {
+              updated.pop();
+            }
+            return updated;
+          });
+          setError(streamErrorMessage);
+        } else {
+          // Partial response already visible — show the error alongside it.
+          setError(`Response was interrupted: ${streamErrorMessage}`);
         }
       }
     } catch (err) {
@@ -195,7 +212,9 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
                 </div>
               </div>
             ))}
-            {isLoading && messages[messages.length - 1]?.role === 'assistant' && (
+            {/* Assistant bubble is added lazily (on first text), so show the
+                typing indicator whenever a request is in flight. */}
+            {isLoading && (
               <div className="flex justify-start">
                 <div className="bg-surface px-4 py-3 text-white">
                   <div className="flex gap-1">

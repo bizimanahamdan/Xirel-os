@@ -6,26 +6,46 @@ import type { AiProviderId } from './types';
  *
  * Why this file exists: a single "model" string cannot mean the same
  * thing across providers — OpenRouter uses qualified names like
- * "openai/gpt-4-turbo", Groq and Gemini use their own unqualified model
+ * "openai/gpt-4o-mini", Groq and Gemini use their own unqualified model
  * ids, and Qwen's valid ids depend entirely on which host QWEN_BASE_URL
  * points at. Code that sends one hardcoded model string to whichever
  * provider the router happens to fall back to will silently send the
  * wrong model id to at least some providers. This registry exists so
- * new code (the agent/orchestrator path) resolves a model per-provider
- * instead of repeating that mistake.
+ * the router resolves a model PER PROVIDER (via modelByProvider) instead
+ * of repeating that mistake — sending "openai/gpt-4-turbo" to Gemini was
+ * exactly the production 404 this file's comments warn about.
  *
- * UNVERIFIED like the adapters themselves: these are current model ids
- * per each provider's public docs as of this codebase's writing, not
- * confirmed against a live call in this environment. Re-check against
- * the provider's model list before relying on this in production —
- * providers deprecate and rename models regularly.
+ * VERIFIED 2026-09-22 against each provider's live documentation:
+ *   - Gemini: https://ai.google.dev/gemini-api/docs/deprecations and
+ *     https://ai.google.dev/api/generate-content — gemini-3.8-flash is
+ *     Google's current flagship Flash model (released 2026-09-02, used in
+ *     every current official example; gemini-2.0-flash was SHUT DOWN
+ *     2026-06-01 and 404s).
+ *   - Groq: https://console.groq.com/docs/deprecations — openai/gpt-oss-120b
+ *     is Groq's officially recommended production model (llama-3.3-70b-
+ *     versatile was SHUT DOWN 2026-08-16).
+ *   - OpenRouter: https://openrouter.ai/api/v1/models — "openrouter/free"
+ *     is OpenRouter's official Free Models Router (it selects among the
+ *     free models currently available, so it stays usable as individual
+ *     free models rotate in and out). Being a free-model router, it may
+ *     not support tool calling reliably — the tool-calling orchestrator
+ *     path should prefer gemini/groq first (registry order handles this).
+ * Providers deprecate models regularly — RE-VERIFY these ids against the
+ * pages above whenever chat responses start failing with 404/"model not
+ * found", rather than assuming the code regressed.
+ *
+ * Each default is overridable without a code change via env var, so a
+ * future deprecation can be handled by updating the environment (e.g.
+ * Vercel project settings) alone. Qwen's valid ids depend entirely on
+ * which host QWEN_BASE_URL points at, and Moonshot renames models with
+ * releases — both stay env-configurable rather than pinned here.
  */
 const DEFAULT_MODELS: Record<AiProviderId, string> = {
-  groq: 'llama-3.3-70b-versatile',
-  gemini: 'gemini-2.0-flash',
-  openrouter: 'openai/gpt-4-turbo',
+  groq: process.env.GROQ_DEFAULT_MODEL || 'openai/gpt-oss-120b',
+  gemini: process.env.GEMINI_DEFAULT_MODEL || 'gemini-3.8-flash',
+  openrouter: process.env.OPENROUTER_DEFAULT_MODEL || 'openrouter/free',
   qwen: process.env.QWEN_DEFAULT_MODEL || 'qwen-plus',
-  moonshot: 'moonshot-v1-8k',
+  moonshot: process.env.MOONSHOT_DEFAULT_MODEL || 'moonshot-v1-8k',
   openai: 'gpt-4-turbo',
   anthropic: 'claude-3-5-sonnet-latest',
 };
