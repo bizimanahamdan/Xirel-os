@@ -60,6 +60,14 @@ export default async function ChatPage({
                       supabase/migrations/0002_phase2_tasks_messages.sql
                     </code>
                   </li>
+                  <li>
+                    4. Repeat for{' '}
+                    <code className="text-xs bg-black/30 p-2 rounded">
+                      supabase/migrations/0005_project_agent_runtime.sql
+                    </code>{' '}
+                    (project registry + agent runs — required for the agent
+                    runtime)
+                  </li>
                   <li>4. Click "Run" to execute the migration</li>
                   <li>5. Refresh this page once complete</li>
                 </ol>

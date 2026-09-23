@@ -1,11 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { readChatStream } from '@/lib/chat/chat-stream';
 
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+}
+
+interface AgentRunInfo {
+  runId: string;
+  status: 'completed' | 'waiting_for_approval' | 'failed';
+  verification?: { verified: number; failed: number; unavailable: number } | null;
 }
 
 interface ChatClientProps {
@@ -19,6 +24,7 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
   const [error, setError] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskTitle, setTaskTitle] = useState<string>('New Conversation');
+  const [lastRun, setLastRun] = useState<AgentRunInfo | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Load task history on mount
@@ -55,24 +61,21 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
       setTaskTitle(userMessage.slice(0, 50));
     }
 
-    // Bounds the browser's own wait for the entire exchange (connecting
-    // AND streaming the response), independent of anything the server
-    // does. A single AbortSignal on fetch() covers body-reading too, not
-    // just the initial connection — so one timer for the whole lifecycle
-    // is correct here; there's no need to re-arm it once headers arrive.
-    // Without this, if the connection ever goes silent mid-stream (rather
-    // than closing cleanly or erroring — a real possibility if the
-    // serverless platform kills the backend function while a response is
-    // in flight) reader.read() below can hang forever with nothing to
-    // catch it, even though the existing finally block correctly clears
-    // isLoading on every OTHER exit path. 65s gives ~5s slack over the
-    // server's own 60s maxDuration (see /api/chat/route.ts) so a
-    // legitimate full-duration server response isn't cut off first.
+    // Bounds the browser's own wait for the whole agent turn (connect +
+    // plan + execute + verify), independent of anything the server does.
+    // A single AbortSignal on fetch() covers body-reading too. The agent
+    // runtime persists its run/trajectory server-side, so an aborted wait
+    // here never loses the work record — the run stays inspectable at
+    // /api/agent/runs/[id] even if this request gives up. 65s gives ~5s
+    // slack over the route's own 60s maxDuration.
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 65_000);
 
     try {
-      const response = await fetch('/api/chat', {
+      // Phase 4: the main chat talks to the AGENT RUNTIME (plan → execute
+      // → verify), not the bare streaming model endpoint. /api/chat
+      // remains available for compatibility but is no longer used here.
+      const response = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -83,74 +86,34 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
         signal: controller.signal,
       });
 
+      const data = await response.json().catch(() => null);
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to send message');
+        throw new Error(
+          (data && typeof data.error === 'string' && data.error) ||
+            'Failed to send message'
+        );
       }
 
-      if (!response.body) {
-        throw new Error('No response body');
+      if (data && typeof data.taskId === 'string') {
+        setTaskId(data.taskId);
       }
 
-      // The assistant bubble is only created once actual text arrives —
-      // if the provider fails before producing anything, the user gets a
-      // visible error instead of a permanently-empty message bubble.
-      let fullResponse = '';
-      let assistantBubbleAdded = false;
-
-      const updateAssistant = () => {
-        setMessages((prev) => {
-          const updated = [...prev];
-          const lastMessage = updated[updated.length - 1];
-          // Only update if the last message is an assistant message
-          if (lastMessage && lastMessage.role === 'assistant') {
-            updated[updated.length - 1] = { ...lastMessage, content: fullResponse };
-          }
-          return updated;
+      const text = data && typeof data.text === 'string' ? data.text : '';
+      if (data && typeof data.runId === 'string') {
+        setLastRun({
+          runId: data.runId,
+          status: data.status === 'waiting_for_approval' ? 'waiting_for_approval' : data.status,
+          verification: data.verification ?? null,
         });
-      };
+      }
 
-      // Provider failures arrive as `data: {"error": ...}` events INSIDE a
-      // 200 SSE response (the stream has started, so the status code can't
-      // change). These MUST surface — the previous code threw inside its
-      // own parse-try/catch, which silently swallowed them and left the
-      // user staring at an empty bubble with no explanation.
-      let streamErrorMessage: string | null = null;
-
-      await readChatStream(response.body, {
-        onText: (text) => {
-          fullResponse += text;
-          if (!assistantBubbleAdded) {
-            assistantBubbleAdded = true;
-            setMessages((prev) => [...prev, { role: 'assistant', content: fullResponse }]);
-          } else {
-            updateAssistant();
-          }
-        },
-        onError: (message) => {
-          streamErrorMessage = message;
-        },
-      });
-
-      if (streamErrorMessage) {
-        // Nothing streamed — drop the placeholder bubble so the error is
-        // the only visible outcome.
-        if (!assistantBubbleAdded) {
-          setError(streamErrorMessage);
-        } else if (!fullResponse) {
-          setMessages((prev) => {
-            const updated = [...prev];
-            const lastMessage = updated[updated.length - 1];
-            if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.content) {
-              updated.pop();
-            }
-            return updated;
-          });
-          setError(streamErrorMessage);
-        } else {
-          // Partial response already visible — show the error alongside it.
-          setError(`Response was interrupted: ${streamErrorMessage}`);
-        }
+      if (text) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: text }]);
+      } else {
+        // No text and no thrown error: surface honestly instead of a
+        // silent empty response.
+        setError('The agent returned an empty response. Check the run status for details.');
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -177,11 +140,30 @@ export default function ChatClient({ workspaceId }: ChatClientProps) {
               {taskTitle === 'New Conversation' ? 'Start a new conversation' : taskTitle}
             </p>
           </div>
-          {taskId && (
-            <div className="text-xs text-muted">
-              Task: {taskId.slice(0, 8)}...
-            </div>
-          )}
+          <div className="flex flex-col items-end gap-1 text-xs text-muted">
+            {taskId && <div>Task: {taskId.slice(0, 8)}...</div>}
+            {lastRun && (
+              <div className="flex items-center gap-2">
+                <span>
+                  Run {lastRun.runId.slice(0, 8)}: {lastRun.status.replace(/_/g, ' ')}
+                </span>
+                {lastRun.verification && (lastRun.verification.verified > 0 || lastRun.verification.failed > 0) && (
+                  <span
+                    className={
+                      lastRun.verification.failed > 0
+                        ? 'text-red-400'
+                        : 'text-green-400'
+                    }
+                  >
+                    {lastRun.verification.verified} verified
+                    {lastRun.verification.failed > 0
+                      ? `, ${lastRun.verification.failed} failed`
+                      : ''}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -5,7 +5,7 @@ import { db } from '@/lib/db';
 import { workspaceMembers, messages as messagesTable } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getConfiguredProviderInstances } from '@/lib/ai/registry';
-import { runOrchestrator } from '@/lib/agents/orchestrator';
+import { runAgentTurn } from '@/lib/agents/runtime';
 import {
   createTask,
   getTaskMessagesForAgent,
@@ -153,25 +153,83 @@ export async function POST(request: NextRequest) {
   try {
     const history = await getTaskMessagesForAgent(currentTaskId);
 
-    const result = await runOrchestrator({
+    // The durable runtime (Phase 4): create run → plan → execute → verify
+    // → complete, persisting the trajectory in agent_runs/steps/events.
+    // runAgentTurn never throws for agent-side failures — it returns a
+    // failed status with the error recorded on the run.
+    const result = await runAgentTurn({
       workspaceId,
       userId: user.id,
       taskId: currentTaskId,
-      messages: history,
+      message,
+      history,
       providerPriority: providers,
     });
 
-    // Persist everything the agent produced this turn (tool-call turns,
-    // tool results, and the final answer) so a page refresh or resumed
-    // conversation sees the full trace, not just the final text.
-    await saveAgentMessages(currentTaskId, result.newMessages);
-    await updateTaskStatus(currentTaskId, 'completed');
+    if (result.newMessages.length > 0) {
+      // Persist everything the agent produced this turn (tool-call turns,
+      // tool results, and the final answer) so a page refresh or resumed
+      // conversation sees the full trace, not just the final text.
+      await saveAgentMessages(currentTaskId, result.newMessages);
+    }
+
+    if (result.status === 'failed') {
+      try {
+        await updateTaskStatus(currentTaskId, 'failed');
+      } catch {
+        // Silent — the client already gets the error below.
+      }
+      return NextResponse.json(
+        {
+          error: result.error ?? 'Agent run failed',
+          taskId: currentTaskId,
+          runId: result.runId,
+          status: result.status,
+        },
+        { status: 502 }
+      );
+    }
+
+    if (result.status === 'waiting_for_approval') {
+      // A requested action needs a human decision — the run (and the
+      // trajectory) stays open in waiting_for_approval; the task mirrors it.
+      try {
+        await updateTaskStatus(currentTaskId, 'waiting_for_approval');
+      } catch {
+        // Silent — response still goes out below.
+      }
+      return NextResponse.json({
+        taskId: currentTaskId,
+        runId: result.runId,
+        status: result.status,
+        text: result.text,
+        providerId: result.providerId,
+        iterations: result.iterations,
+        projectId: result.projectId,
+      });
+    }
+
+    try {
+      await updateTaskStatus(currentTaskId, 'completed');
+    } catch {
+      // Silent — response still goes out below.
+    }
 
     return NextResponse.json({
       taskId: currentTaskId,
+      runId: result.runId,
+      status: result.status,
       text: result.text,
       providerId: result.providerId,
       iterations: result.iterations,
+      projectId: result.projectId,
+      verification: result.verification
+        ? {
+            verified: result.verification.verified,
+            failed: result.verification.failed,
+            unavailable: result.verification.unavailable,
+          }
+        : null,
     });
   } catch (err) {
     console.error('Agent run failed:', err);
