@@ -7,6 +7,7 @@ import { getDefaultModel } from '@/lib/ai/models';
 import type { AiMessage, AiProviderId, AiToolCall } from '@/lib/ai/types';
 import { getAllTools, getTool, toAiToolDefinitions } from './tools/registry';
 import type { ToolPermission } from './tools/types';
+import { requiresApproval } from './approval';
 
 /**
  * Orchestrator Agent (Phase 3)
@@ -43,6 +44,24 @@ export interface OrchestratorRunRequest {
   providerPriority: AiProviderId[];
   /** Optional per-provider model override; falls back to each provider's default (src/lib/ai/models.ts). */
   modelByProvider?: Partial<Record<AiProviderId, string>>;
+  /**
+   * Optional run instrumentation (Phase 4). Lets the durable runtime
+   * observe the loop without changing it — every hook is optional and
+   * the orchestrator never depends on a hook succeeding. Hook errors
+   * are logged, never raised into the loop.
+   */
+  hooks?: OrchestratorHooks;
+}
+
+export interface OrchestratorHooks {
+  /** The durable run these hooks record into (linked into tool audit rows). */
+  runId?: string | null;
+  /** Each model iteration (tool-calling round) about to start. */
+  onTurnStart?(iteration: number): Promise<void> | void;
+  /** A tool call finished executing (or was blocked — success=false). */
+  onToolExecuted?(call: AiToolCall, resultJson: string, success: boolean): Promise<void> | void;
+  /** The loop produced its final text (or hit the iteration cap). */
+  onFinalText?(text: string, providerId: AiProviderId): Promise<void> | void;
 }
 
 export interface OrchestratorRunResult {
@@ -74,6 +93,7 @@ function hasPermission(
 
 async function logToolExecution(params: {
   taskId: string;
+  runId?: string | null;
   toolName: string;
   riskLevel: string;
   input: Record<string, unknown>;
@@ -84,6 +104,7 @@ async function logToolExecution(params: {
   try {
     await db.insert(toolExecutions).values({
       taskId: params.taskId,
+      runId: params.runId ?? null,
       toolName: params.toolName,
       riskLevel: params.riskLevel as never,
       input: params.input,
@@ -101,8 +122,9 @@ async function logToolExecution(params: {
 
 async function executeToolCall(
   call: AiToolCall,
-  ctx: { workspaceId: string; userId: string; taskId: string },
-  userRole: 'viewer' | 'member' | 'admin' | 'owner'
+  ctx: { workspaceId: string; userId: string; taskId: string; runId?: string | null },
+  userRole: 'viewer' | 'member' | 'admin' | 'owner',
+  onFinished?: (call: AiToolCall, resultJson: string, success: boolean) => Promise<void> | void
 ): Promise<string> {
   const tool = getTool(call.name);
 
@@ -110,6 +132,7 @@ async function executeToolCall(
     const error = `Unknown tool "${call.name}". No tool with that name is registered.`;
     await logToolExecution({
       taskId: ctx.taskId,
+      runId: ctx.runId ?? null,
       toolName: call.name,
       riskLevel: 'safe',
       input: call.arguments,
@@ -124,6 +147,7 @@ async function executeToolCall(
     const error = `Permission denied: tool "${tool.name}" requires role "${tool.requiredPermission}" or higher; caller has "${userRole}".`;
     await logToolExecution({
       taskId: ctx.taskId,
+      runId: ctx.runId ?? null,
       toolName: tool.name,
       riskLevel: tool.riskLevel,
       input: call.arguments,
@@ -134,11 +158,37 @@ async function executeToolCall(
     return JSON.stringify({ success: false, error });
   }
 
+  // Approval gate (Phase 4): moderate+ risk tools enter waiting_for_approval
+  // semantics instead of executing unattended. All registered tools are
+  // safe/low today, so runtime behavior is unchanged — this is the central
+  // enforcement point future gateway tools must pass.
+  const approval = requiresApproval(tool.riskLevel);
+  if (approval.action === 'requires_approval') {
+    const error = 'APPROVAL_REQUIRED: ' + approval.reason;
+    await logToolExecution({
+      taskId: ctx.taskId,
+      runId: ctx.runId ?? null,
+      toolName: tool.name,
+      riskLevel: tool.riskLevel,
+      input: call.arguments,
+      output: undefined,
+      success: false,
+      error,
+    });
+    return JSON.stringify({
+      success: false,
+      error,
+      approval_required: true,
+      riskLevel: tool.riskLevel,
+    });
+  }
+
   const parsed = tool.inputSchema.safeParse(call.arguments);
   if (!parsed.success) {
     const error = `Invalid arguments for tool "${tool.name}": ${parsed.error.message}`;
     await logToolExecution({
       taskId: ctx.taskId,
+      runId: ctx.runId ?? null,
       toolName: tool.name,
       riskLevel: tool.riskLevel,
       input: call.arguments,
@@ -153,6 +203,7 @@ async function executeToolCall(
     const result = await tool.execute(parsed.data, ctx);
     await logToolExecution({
       taskId: ctx.taskId,
+      runId: ctx.runId ?? null,
       toolName: tool.name,
       riskLevel: tool.riskLevel,
       input: call.arguments,
@@ -160,6 +211,13 @@ async function executeToolCall(
       success: result.success,
       error: result.error,
     });
+    if (onFinished) {
+      try {
+        await onFinished(call, JSON.stringify(result), result.success);
+      } catch (err) {
+        console.error('Orchestrator onToolExecuted hook failed:', err);
+      }
+    }
     return JSON.stringify(result);
   } catch (err) {
     // A tool's execute() throwing is a bug in the tool, not a reason to
@@ -169,6 +227,7 @@ async function executeToolCall(
     const error = err instanceof Error ? err.message : 'Tool execution threw an unexpected error';
     await logToolExecution({
       taskId: ctx.taskId,
+      runId: ctx.runId ?? null,
       toolName: tool.name,
       riskLevel: tool.riskLevel,
       input: call.arguments,
@@ -204,9 +263,17 @@ export async function runOrchestrator(
 
   const conversation: AiMessage[] = [...request.messages];
   const newMessages: AiMessage[] = [];
+  const hooks = request.hooks;
   let lastProviderId: AiProviderId = primaryProvider;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    if (hooks?.onTurnStart) {
+      try {
+        await hooks.onTurnStart(iteration);
+      } catch (err) {
+        console.error('Orchestrator onTurnStart hook failed:', err);
+      }
+    }
     const routeRequest: RouteRequest = {
       messages: conversation,
       // `model` is required by AiRequest but is only actually used when a
@@ -230,6 +297,13 @@ export async function runOrchestrator(
       // Model gave a final answer — done.
       const finalMessage: AiMessage = { role: 'assistant', content: response.text };
       newMessages.push(finalMessage);
+      if (hooks?.onFinalText) {
+        try {
+          await hooks.onFinalText(response.text, response.providerId);
+        } catch (err) {
+          console.error('Orchestrator onFinalText hook failed:', err);
+        }
+      }
       return {
         text: response.text,
         newMessages,
@@ -251,8 +325,16 @@ export async function runOrchestrator(
     for (const call of response.toolCalls) {
       const resultJson = await executeToolCall(
         call,
-        { workspaceId: request.workspaceId, userId: request.userId, taskId: request.taskId },
-        userRole
+        {
+          workspaceId: request.workspaceId,
+          userId: request.userId,
+          taskId: request.taskId,
+          runId: hooks?.runId ?? null,
+        },
+        userRole,
+        hooks?.onToolExecuted
+          ? (c, json, success) => hooks.onToolExecuted!(c, json, success)
+          : undefined
       );
       const toolResultMessage: AiMessage = {
         role: 'tool',
@@ -273,6 +355,13 @@ export async function runOrchestrator(
       "I made several tool calls but couldn't reach a final answer within the step limit. Here's what I found so far — let me know if you'd like me to continue.",
   };
   newMessages.push(fallbackMessage);
+  if (hooks?.onFinalText) {
+    try {
+      await hooks.onFinalText(fallbackMessage.content, lastProviderId);
+    } catch (err) {
+      console.error('Orchestrator onFinalText hook failed:', err);
+    }
+  }
   return {
     text: fallbackMessage.content,
     newMessages,
