@@ -2,6 +2,12 @@ import 'server-only';
 import type { AiProviderId, AiRequest, AiResponse } from '../types';
 import { AiProviderError } from '../types';
 import { getProvider } from '../registry';
+import { classifyError } from '@/lib/jobs/errors';
+import {
+  cooldownRemainingMs,
+  recordProviderFailure,
+  recordProviderSuccess,
+} from './health';
 
 /**
  * Phase 1 router: ordered fallback only.
@@ -52,6 +58,23 @@ export interface RouteResult extends AiResponse {
  */
 const MAX_ATTEMPTS = 5;
 
+/**
+ * Build a ClassifyInput from a thrown provider error. Providers surface
+ * status codes inside their message text ("... failed: 429 Too Many
+ * Requests: ...") — extract what we can, honestly.
+ */
+function classifyProviderError(err: unknown) {
+  const message = err instanceof AiProviderError ? err.message : String(err);
+  const statusMatch = /\b(\d{3})\b/.exec(message);
+  const status = statusMatch ? Number(statusMatch[1]) : null;
+  const retryMatch = /retry[- ]after[^\d]*(\d+)/i.exec(message);
+  return classifyError({
+    status: status !== null && status >= 400 && status <= 599 ? status : null,
+    message,
+    retryAfterHeader: retryMatch ? retryMatch[1] : null,
+  });
+}
+
 export async function routeGenerateText(request: RouteRequest): Promise<RouteResult> {
   const failedProviders: RouteResult['failedProviders'] = [];
   const candidates = request.providerPriority.slice(0, MAX_ATTEMPTS);
@@ -68,13 +91,33 @@ export async function routeGenerateText(request: RouteRequest): Promise<RouteRes
       continue;
     }
 
+    // Cooldown awareness (Phase 7): skip providers that recently failed
+    // in a way that makes an immediate retry pointless (rate limit,
+    // exhausted quota, outage window). The request still gets served by
+    // the next candidate instead of burning a doomed attempt.
+    const coolingMs = cooldownRemainingMs(providerId);
+    if (coolingMs > 0) {
+      failedProviders.push({
+        providerId,
+        error: `cooldown (${Math.ceil(coolingMs / 1000)}s remaining after last failure)`,
+      });
+      continue;
+    }
+
+    const startedAt = Date.now();
     try {
       const modelForThisProvider = request.modelByProvider?.[providerId] ?? request.model;
       const response = await provider.generateText({ ...request, model: modelForThisProvider });
+      recordProviderSuccess(providerId, Date.now() - startedAt);
       return { ...response, failedProviders };
     } catch (err) {
+      const classified = classifyProviderError(err);
+      recordProviderFailure(providerId, classified);
       const message = err instanceof AiProviderError ? err.message : String(err);
-      failedProviders.push({ providerId, error: message });
+      failedProviders.push({
+        providerId,
+        error: `${message.slice(0, 300)} [${classified.errorClass}]`,
+      });
 
       // Non-retryable errors (bad request, auth failure, etc.) still fall
       // through to the next provider here — a provider being broken for
@@ -110,6 +153,17 @@ export async function* routeStreamText(
       continue;
     }
 
+    const streamCoolingMs = cooldownRemainingMs(providerId);
+    if (streamCoolingMs > 0) {
+      console.warn(`Provider ${providerId} cooling down (${Math.ceil(streamCoolingMs / 1000)}s) — skipping.`);
+      failedProviders.push({
+        providerId,
+        error: `cooldown (${Math.ceil(streamCoolingMs / 1000)}s remaining after last failure)`,
+      });
+      continue;
+    }
+
+    const streamStartedAt = Date.now();
     try {
       // Resolve the model PER PROVIDER, exactly like routeGenerateText
       // below. A bare request.model (e.g. an OpenRouter-qualified name like
@@ -129,14 +183,20 @@ export async function* routeStreamText(
           yield { text: chunk.text, providerId };
         }
       }
+      recordProviderSuccess(providerId, Date.now() - streamStartedAt);
       return;
     } catch (err) {
+      const classified = classifyProviderError(err);
+      recordProviderFailure(providerId, classified);
       const message = err instanceof AiProviderError ? err.message : String(err);
       // Truncate provider error bodies so a chatty 4xx/5xx response can't
       // flood logs or the client-facing error (they never contain keys —
       // keys are sent in headers and providers don't echo them).
-      failedProviders.push({ providerId, error: message.slice(0, 300) });
-      console.warn(`Provider ${providerId} stream failed: ${message}`);
+      failedProviders.push({
+        providerId,
+        error: `${message.slice(0, 300)} [${classified.errorClass}]`,
+      });
+      console.warn(`Provider ${providerId} stream failed: ${message} [${classified.errorClass}]`);
       continue;
     }
   }
