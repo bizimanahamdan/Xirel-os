@@ -2,7 +2,7 @@
   "name": "xirel-os",
   "version": "0.1.0",
   "private": true,
-  "description": "Xirel AI Operating System - AI Business Operating System (Phase 1: Foundation)",
+  "description": "Xirel OS — AI Operating System (AI runtime + Business OS suite)",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -20,7 +20,8 @@
     "@supabase/ssr": "^0.4.0",
     "drizzle-orm": "^0.33.0",
     "postgres": "^3.4.4",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "lucide-react": "^0.468.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
