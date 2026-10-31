@@ -36,6 +36,8 @@ import {
  */
 
 export interface AgentTurnRequest {
+  /** Tools a human approved for this continuation (durable queue resume). */
+  approvedTools?: string[];
   workspaceId: string;
   userId: string;
   taskId: string;
@@ -79,7 +81,8 @@ function truncateForStep(raw: string): string {
 }
 
 export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurnResult> {
-  const { workspaceId, userId, taskId, message, history, providerPriority } = request;
+  const { workspaceId, userId, taskId, message, history, providerPriority, approvedTools } =
+    request;
 
   // ── 1. RUN ──────────────────────────────────────────────
   const run = await createRun({
@@ -127,6 +130,7 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
 
     let stepSeq = 0;
     let waitingApproval = false;
+    const waitingTools: string[] = [];
     // Per-turn record of what actually executed — captured by the hook
     // closure below, consumed by the verification phase. NEVER module
     // state: concurrent turns must not see each other's tool calls.
@@ -138,6 +142,7 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
       taskId,
       messages: history,
       providerPriority,
+      approvedTools: approvedTools,
       hooks: {
         runId: run.id,
         onTurnStart: (iteration) => {
@@ -194,6 +199,7 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
 
           if (approvalBlocked) {
             waitingApproval = true;
+            waitingTools.push(call.name);
           }
           turnToolCalls.push({ call: { name: call.name }, resultJson, success });
         },
@@ -213,6 +219,10 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
     // request as an explicit approval-needed state (Milestone: approval).
     if (waitingApproval) {
       result.status = 'waiting_for_approval';
+      // Executor-consumable signal: which tools the human must decide on.
+      result.error = `APPROVAL_REQUIRED: tool${waitingTools.length > 1 ? 's' : ''} ${waitingTools
+        .map((t) => `"${t}"`)
+        .join(', ')} awaiting human approval.`;
       await addEvent({
         runId: run.id,
         workspaceId,

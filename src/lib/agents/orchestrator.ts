@@ -51,6 +51,13 @@ export interface OrchestratorRunRequest {
    * are logged, never raised into the loop.
    */
   hooks?: OrchestratorHooks;
+  /**
+   * Tools a human explicitly approved while the run waited for approval
+   * (durable queue: waiting_for_approval → approved → resume). An
+   * approved tool bypasses the approval gate ONCE per mention in this
+   * list — the gate still applies to everything else.
+   */
+  approvedTools?: string[];
 }
 
 export interface OrchestratorHooks {
@@ -122,7 +129,13 @@ async function logToolExecution(params: {
 
 async function executeToolCall(
   call: AiToolCall,
-  ctx: { workspaceId: string; userId: string; taskId: string; runId?: string | null },
+  ctx: {
+    workspaceId: string;
+    userId: string;
+    taskId: string;
+    runId?: string | null;
+    approvedTools?: string[];
+  },
   userRole: 'viewer' | 'member' | 'admin' | 'owner',
   onFinished?: (call: AiToolCall, resultJson: string, success: boolean) => Promise<void> | void
 ): Promise<string> {
@@ -163,8 +176,10 @@ async function executeToolCall(
   // safe/low today, so runtime behavior is unchanged — this is the central
   // enforcement point future gateway tools must pass.
   const approval = requiresApproval(tool.riskLevel);
-  if (approval.action === 'requires_approval') {
-    const error = 'APPROVAL_REQUIRED: ' + approval.reason;
+  const humanApproved =
+    approval.action === 'requires_approval' && (ctx.approvedTools ?? []).includes(tool.name);
+  if (approval.action === 'requires_approval' && !humanApproved) {
+    const error = `APPROVAL_REQUIRED: tool "${tool.name}" — ${approval.reason}`;
     await logToolExecution({
       taskId: ctx.taskId,
       runId: ctx.runId ?? null,
@@ -330,6 +345,7 @@ export async function runOrchestrator(
           userId: request.userId,
           taskId: request.taskId,
           runId: hooks?.runId ?? null,
+          approvedTools: request.approvedTools,
         },
         userRole,
         hooks?.onToolExecuted

@@ -21,9 +21,10 @@ import {
   integer,
   pgEnum,
   uniqueIndex,
+  index,
   jsonb,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 
 // ─────────────────────────────────────────────────────────
 // Enums
@@ -492,5 +493,204 @@ export const projectMemoryRelations = relations(projectMemory, ({ one }) => ({
   workspace: one(workspaces, {
     fields: [projectMemory.workspaceId],
     references: [workspaces.id],
+  }),
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// Phase 3/11: Durable execution engine (migration 0008 mirror)
+// Postgres is the authoritative task store: jobs are claimed
+// atomically (FOR UPDATE SKIP LOCKED), execute under leases with
+// heartbeats, checkpoint progress, retry transient failures and
+// can wait for human approval. TS types only — the SQL migration
+// (0008_durable_execution.sql) is the DDL source of truth.
+// ═══════════════════════════════════════════════════════════════
+
+export const agentJobStatusEnum = pgEnum('agent_job_status', [
+  'queued',
+  'claimed',
+  'planning',
+  'running',
+  'waiting_for_approval',
+  'retrying',
+  'verifying',
+  'completed',
+  'failed',
+  'cancelled',
+  'paused',
+]);
+
+export const agentJobs = pgTable(
+  'agent_jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    runId: uuid('run_id').references(() => agentRuns.id, { onDelete: 'set null' }),
+    scheduleId: uuid('schedule_id'),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    taskType: text('task_type').notNull().default('agent_task'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    status: agentJobStatusEnum('status').notNull().default('queued'),
+    priority: integer('priority').notNull().default(0),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    nextExecutionAt: timestamp('next_execution_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+    currentStep: text('current_step'),
+    checkpoint: jsonb('checkpoint').$type<Record<string, unknown>>().notNull().default({}),
+    lastError: text('last_error'),
+    errorClass: text('error_class'),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    claimIdx: index('agent_jobs_claim_idx').on(t.status, t.nextExecutionAt),
+    workspaceIdx: index('agent_jobs_workspace_idx').on(t.workspaceId, t.createdAt),
+    leaseIdx: index('agent_jobs_lease_idx').on(t.leaseExpiresAt),
+    idempotencyUniq: uniqueIndex('agent_jobs_idempotency_uniq')
+      .on(t.workspaceId, t.idempotencyKey)
+      .where(sql`idempotency_key is not null`),
+  }),
+);
+
+export const agentSchedules = pgTable(
+  'agent_schedules',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    name: text('name').notNull(),
+    instructions: text('instructions').notNull(),
+    taskType: text('task_type').notNull().default('scheduled_task'),
+    cron: text('cron').notNull(),
+    timezone: text('timezone').notNull().default('UTC'),
+    status: text('status').notNull().default('active'),
+    nextRunAt: timestamp('next_run_at', { withTimezone: true }).notNull().defaultNow(),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    lastJobId: uuid('last_job_id'),
+    lastError: text('last_error'),
+    failureCount: integer('failure_count').notNull().default(0),
+    runCount: integer('run_count').notNull().default(0),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    /** (workspace_id, name) unique — same convention as 0006's tables. */
+    nameUniq: uniqueIndex('agent_schedules_ws_name_uniq').on(t.workspaceId, t.name),
+    dueIdx: index('agent_schedules_due_idx').on(t.status, t.nextRunAt),
+  }),
+);
+
+export const agentApprovals = pgTable(
+  'agent_approvals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    jobId: uuid('job_id').references(() => agentJobs.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id').references(() => agentRuns.id, { onDelete: 'set null' }),
+    requestedBy: uuid('requested_by')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    toolName: text('tool_name'),
+    riskLevel: text('risk_level'),
+    summary: text('summary').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    status: text('status').notNull().default('pending'),
+    decidedBy: uuid('decided_by').references(() => profiles.id, { onDelete: 'set null' }),
+    decisionNote: text('decision_note'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    workspaceIdx: index('agent_approvals_workspace_idx').on(t.workspaceId, t.createdAt),
+    jobIdx: index('agent_approvals_job_idx').on(t.jobId),
+  }),
+);
+
+export const workerHeartbeats = pgTable('worker_heartbeats', {
+  workerId: text('worker_id').primaryKey(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  activeJobs: integer('active_jobs').notNull().default(0),
+  maxConcurrency: integer('max_concurrency').notNull().default(1),
+  version: text('version'),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const systemSettings = pgTable('system_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<unknown>().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ─────────────────────────────────────────────────────────
+// Relations (Phase 3/11 tables)
+// ─────────────────────────────────────────────────────────
+
+export const agentJobsRelations = relations(agentJobs, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [agentJobs.workspaceId],
+    references: [workspaces.id],
+  }),
+  createdByUser: one(profiles, {
+    fields: [agentJobs.createdBy],
+    references: [profiles.id],
+  }),
+  task: one(tasks, { fields: [agentJobs.taskId], references: [tasks.id] }),
+  project: one(projects, { fields: [agentJobs.projectId], references: [projects.id] }),
+  run: one(agentRuns, { fields: [agentJobs.runId], references: [agentRuns.id] }),
+  approvals: many(agentApprovals),
+}));
+
+export const agentSchedulesRelations = relations(agentSchedules, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [agentSchedules.workspaceId],
+    references: [workspaces.id],
+  }),
+  createdByUser: one(profiles, {
+    fields: [agentSchedules.createdBy],
+    references: [profiles.id],
+  }),
+  project: one(projects, {
+    fields: [agentSchedules.projectId],
+    references: [projects.id],
+  }),
+  jobs: many(agentJobs),
+}));
+
+export const agentApprovalsRelations = relations(agentApprovals, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [agentApprovals.workspaceId],
+    references: [workspaces.id],
+  }),
+  job: one(agentJobs, { fields: [agentApprovals.jobId], references: [agentJobs.id] }),
+  run: one(agentRuns, { fields: [agentApprovals.runId], references: [agentRuns.id] }),
+  requester: one(profiles, {
+    fields: [agentApprovals.requestedBy],
+    references: [profiles.id],
   }),
 }));

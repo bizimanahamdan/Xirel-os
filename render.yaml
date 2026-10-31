@@ -1,0 +1,62 @@
+# Render blueprint for the Xirel background worker (Phase 4).
+#
+# NOTE ON PROVISIONING: nothing is created until YOU create/review the
+# service from this blueprint in the Render dashboard. Background workers
+# on Render have no free tier — `plan: starter` is the cheapest option
+# and will bill once YOU deploy it. autoDeploy is OFF: deploys are
+# manual during the safe-rollout phase.
+#
+# The worker starts independently of Next.js (worker/index.ts), connects
+# directly to Supabase Postgres via DATABASE_URL, claims durable jobs
+# with SKIP LOCKED, and drains on SIGTERM (see worker/index.ts).
+#
+# SECRETS: every credential is `sync: false` — set it in the Render
+# dashboard, never in this file.
+
+services:
+  - type: worker
+    name: xirel-worker
+    runtime: node
+    plan: starter # cheapest background-worker plan; manual deploy only
+    autoDeploy: false # safe rollout: promote deliberately
+    buildCommand: npm ci
+    startCommand: npm run worker
+    envVars:
+      # ── Required: durable queue + agent runtime storage ──
+      # Supabase Postgres. On Render (long-running process) the DIRECT
+      # connection (port 5432, session pooler) is appropriate — unlike
+      # Vercel serverless, the worker holds warm connections.
+      - key: DATABASE_URL
+        sync: false
+
+      # ── AI providers (central router keys; only configured ones are used) ──
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+
+      # ── Worker tuning (safe defaults) ──
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      - key: WORKER_LEASE_SECONDS
+        value: "300"
+      - key: WORKER_POLL_MS
+        value: "2000"
+      - key: WORKER_HEARTBEAT_MS
+        value: "15000"
+      - key: WORKER_SCHEDULER_MS
+        value: "30000"
+      - key: WORKER_GRACE_MS
+        value: "25000"
+      - key: WORKER_PROVIDER_PRIORITY
+        value: "gemini,openrouter,groq"
+
+      # ── Approval policy (keep false until review flows are trusted) ──
+      - key: AGENT_AUTO_APPROVE_MODERATE
+        value: "false"
+
+      # Node 22 for `node --env-file-if-exists` + `--import tsx`.
+      - key: NODE_VERSION
+        value: "22"
