@@ -47,8 +47,9 @@ export function isJobStatus(value: unknown): value is JobStatus {
 export const JOB_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
   queued: ['claimed', 'cancelled', 'paused'],
   claimed: ['planning', 'running', 'queued', 'retrying', 'failed', 'cancelled'],
-  planning: ['running', 'queued', 'retrying', 'failed', 'cancelled', 'paused'],
+  planning: ['claimed', 'running', 'queued', 'retrying', 'failed', 'cancelled', 'paused'],
   running: [
+    'claimed', // lease-expiry reclaim
     'verifying',
     'waiting_for_approval',
     'queued', // graceful-shutdown release
@@ -62,7 +63,7 @@ export const JOB_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> 
   // checkpoint), denied → cancelled. May also be paused by an admin.
   waiting_for_approval: ['queued', 'cancelled', 'paused'],
   retrying: ['claimed', 'queued', 'cancelled', 'paused'],
-  verifying: ['completed', 'queued', 'retrying', 'failed', 'cancelled', 'paused'],
+  verifying: ['claimed', 'completed', 'queued', 'retrying', 'failed', 'cancelled', 'paused'],
   completed: [],
   failed: [],
   cancelled: [],

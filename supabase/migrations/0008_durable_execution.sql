@@ -270,3 +270,62 @@ create policy "worker_heartbeats_select_workspace" on public.worker_heartbeats
 drop policy if exists "system_settings_select_authenticated" on public.system_settings;
 create policy "system_settings_select_authenticated" on public.system_settings
   for select to authenticated using (true);
+
+-- ─────────────────────────────────────────────────────────
+-- State-transition guard (defense in depth): the application layer
+-- (src/lib/jobs/state-machine.ts) enforces legal transitions; this
+-- trigger makes the rule hold for EVERY writer, including ad-hoc SQL.
+-- Mirrors JOB_TRANSITIONS exactly.
+-- ─────────────────────────────────────────────────────────
+create or replace function public.enforce_agent_job_transition()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.status is distinct from old.status then
+    case old.status
+      when 'queued' then
+        if new.status not in ('claimed','cancelled','paused') then
+          raise exception 'Invalid job transition: queued → %', new.status;
+        end if;
+      when 'claimed' then
+        if new.status not in ('planning','running','queued','retrying','failed','cancelled') then
+          raise exception 'Invalid job transition: claimed → %', new.status;
+        end if;
+      when 'planning' then
+        if new.status not in ('claimed','running','queued','retrying','failed','cancelled','paused') then
+          raise exception 'Invalid job transition: planning → %', new.status;
+        end if;
+      when 'running' then
+        if new.status not in ('claimed','verifying','waiting_for_approval','queued','retrying','failed','completed','cancelled','paused') then
+          raise exception 'Invalid job transition: running → %', new.status;
+        end if;
+      when 'waiting_for_approval' then
+        if new.status not in ('queued','cancelled','paused') then
+          raise exception 'Invalid job transition: waiting_for_approval → %', new.status;
+        end if;
+      when 'retrying' then
+        if new.status not in ('claimed','queued','cancelled','paused') then
+          raise exception 'Invalid job transition: retrying → %', new.status;
+        end if;
+      when 'verifying' then
+        if new.status not in ('claimed','completed','queued','retrying','failed','cancelled','paused') then
+          raise exception 'Invalid job transition: verifying → %', new.status;
+        end if;
+      when 'paused' then
+        if new.status not in ('queued','cancelled') then
+          raise exception 'Invalid job transition: paused → %', new.status;
+        end if;
+      else
+        -- completed / failed / cancelled are terminal
+        raise exception 'Invalid job transition: % is terminal', old.status;
+      end case;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists agent_jobs_transition_guard on public.agent_jobs;
+create trigger agent_jobs_transition_guard
+  before update on public.agent_jobs
+  for each row execute procedure public.enforce_agent_job_transition();

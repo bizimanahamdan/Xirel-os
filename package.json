@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate:pg --config=drizzle.config.ts",
     "db:push": "drizzle-kit push:pg --config=drizzle.config.ts",
-    "worker": "node --conditions=react-server --env-file-if-exists=.env.local --import tsx worker/index.ts"
+    "worker": "node --conditions=react-server --env-file-if-exists=.env.local --import tsx worker/index.ts",
+    "test:logic": "tsx scripts/test-pure-logic.ts",
+    "test:db": "tsx scripts/test-db.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.4.0",
@@ -32,6 +34,7 @@
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.20",
     "drizzle-kit": "^0.24.0",
+    "embedded-postgres": "^18.6.0-beta.19",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.5",
     "postcss": "^8.4.41",

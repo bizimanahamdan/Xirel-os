@@ -140,12 +140,15 @@ alter table public.projects enable row level security;
 alter table public.workspace_ai_providers enable row level security;
 
 -- profiles: a user can read/update only their own profile.
+drop policy if exists "profiles_select_own" on public.profiles;
 create policy "profiles_select_own" on public.profiles
   for select using (auth.uid() = id);
+drop policy if exists "profiles_update_own" on public.profiles;
 create policy "profiles_update_own" on public.profiles
   for update using (auth.uid() = id);
 
 -- workspaces: visible to members only.
+drop policy if exists "workspaces_select_member" on public.workspaces;
 create policy "workspaces_select_member" on public.workspaces
   for select using (
     exists (
@@ -153,8 +156,10 @@ create policy "workspaces_select_member" on public.workspaces
       where m.workspace_id = workspaces.id and m.user_id = auth.uid()
     )
   );
+drop policy if exists "workspaces_insert_self_owner" on public.workspaces;
 create policy "workspaces_insert_self_owner" on public.workspaces
   for insert with check (owner_id = auth.uid());
+drop policy if exists "workspaces_update_admin" on public.workspaces;
 create policy "workspaces_update_admin" on public.workspaces
   for update using (
     exists (
@@ -165,6 +170,7 @@ create policy "workspaces_update_admin" on public.workspaces
   );
 
 -- workspace_members: visible to other members of the same workspace.
+drop policy if exists "workspace_members_select_same_workspace" on public.workspace_members;
 create policy "workspace_members_select_same_workspace" on public.workspace_members
   for select using (
     exists (
@@ -172,6 +178,7 @@ create policy "workspace_members_select_same_workspace" on public.workspace_memb
       where m.workspace_id = workspace_members.workspace_id and m.user_id = auth.uid()
     )
   );
+drop policy if exists "workspace_members_admin_manage" on public.workspace_members;
 create policy "workspace_members_admin_manage" on public.workspace_members
   for all using (
     exists (
@@ -182,6 +189,7 @@ create policy "workspace_members_admin_manage" on public.workspace_members
   );
 
 -- projects: visible/editable by workspace members.
+drop policy if exists "projects_select_member" on public.projects;
 create policy "projects_select_member" on public.projects
   for select using (
     exists (
@@ -189,6 +197,7 @@ create policy "projects_select_member" on public.projects
       where m.workspace_id = projects.workspace_id and m.user_id = auth.uid()
     )
   );
+drop policy if exists "projects_write_member" on public.projects;
 create policy "projects_write_member" on public.projects
   for all using (
     exists (
@@ -199,6 +208,7 @@ create policy "projects_write_member" on public.projects
   );
 
 -- workspace_ai_providers: admins/owners only (this is config, not content).
+drop policy if exists "ai_providers_select_member" on public.workspace_ai_providers;
 create policy "ai_providers_select_member" on public.workspace_ai_providers
   for select using (
     exists (
@@ -206,6 +216,7 @@ create policy "ai_providers_select_member" on public.workspace_ai_providers
       where m.workspace_id = workspace_ai_providers.workspace_id and m.user_id = auth.uid()
     )
   );
+drop policy if exists "ai_providers_write_admin" on public.workspace_ai_providers;
 create policy "ai_providers_write_admin" on public.workspace_ai_providers
   for all using (
     exists (

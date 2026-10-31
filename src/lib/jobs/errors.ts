@@ -57,7 +57,7 @@ export function parseRetryAfter(header: string | null | undefined): number | nul
 }
 
 const QUOTA_MESSAGE =
-  /\b(quota|credit)s?\b.{0,40}\b(exceed|exhaust|surpass|deplet|run out|insufficient|no remaining|limit reached)\b|\binsufficient_(quota|credits)\b|\bexceeded your (daily|monthly|weekly)\b/i;
+  /\b(quota|credit)s?\b.{0,40}\b(exceed\w*|exhaust\w*|surpass\w*|deplet\w*|run out|insufficient\w*|no remaining|limit reached)\b|\binsufficient_(quota|credits)\b|\bexceeded your (daily|monthly|weekly)\b/i;
 const RATE_MESSAGE = /\brate.?limit|too many requests\b/i;
 const TIMEOUT_MESSAGE = /\b(timeout|timed? ?out|etimedout|esockettimedout)\b/i;
 const NETWORK_MESSAGE =
