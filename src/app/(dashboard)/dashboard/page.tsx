@@ -53,6 +53,14 @@ export default async function DashboardPage() {
             <p className="mt-3 text-sm text-muted">
               Chat with your AI team to build, research, analyze, and deploy.
             </p>
+            <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              <Link href="/command" className="text-primary hover:underline">
+                Durable tasks &amp; agent activity →
+              </Link>
+              <Link href="/business" className="text-primary hover:underline">
+                Business OS (customers, inventory, sales, invoices) →
+              </Link>
+            </div>
           </div>
         )}
 

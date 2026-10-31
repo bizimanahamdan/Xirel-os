@@ -1,359 +1,73 @@
-# Xirel OS — AI Business Operating System
+# Xirel OS — Hybrid AI Operating System
 
-**Current Status:** Phase 1 ✅ Deployed | Phase 2 ✅ Complete (Ready to Deploy)
+Xirel OS is one application with two faces, sharing one Supabase
+project, one auth system, and one set of workspaces:
 
-An AI-powered SaaS platform built with discipline, tested thoroughly, and ready for production. Built with Next.js 14, Supabase, and multiple AI providers (OpenRouter, Groq, Gemini, Qwen).
+- **AI OS** — the agent runtime: provider-routed AI, the Xirel Manager
+  (plan → execute → verify), a durable Postgres task queue executed by a
+  Render background worker, project registry + memory, a tool gateway
+  with permissions/audit/approvals, schedules, and the `/command` AI
+  command center.
+- **Business OS** — the commerce suite at `/business`: customers,
+  inventory, sales, invoices, and payments over the `bos_*` tables with
+  RLS-enforced workspace isolation.
 
----
+## Live surfaces
 
-## 🚀 Deployment Status
+| Surface | Route | Notes |
+|---|---|---|
+| AI Command Center | `/command` | default landing for signed-in users: conversation, durable tasks, approvals, activity, schedules, provider health |
+| Classic chat | `/chat` | agent turn via `/api/agent/chat` (durable run + verification badge) |
+| AI dashboard | `/dashboard` | workspace/provider overview |
+| Business OS | `/business` | standalone suite from `main`, same auth + workspaces |
+| Legacy streaming | `POST /api/chat` | kept intact for existing callers |
 
-### Phase 1: ✅ Live in Production
-- **Dashboard:** https://xirel-os-rwgv.vercel.app/dashboard
-- **Authentication:** Email magic link + GitHub OAuth working
-- **Workspace Management:** Create workspaces, invite team members
-- **AI Provider Detection:** Automatically detects configured providers (Gemini, Groq, OpenRouter, Qwen)
-
-### Phase 2: ✅ Code Complete, Ready to Deploy
-- **Chat Interface:** `/chat` endpoint (streaming, real-time)
-- **Database Schema:** tasks + messages tables with RLS
-- **Persistent History:** Conversation history saved to database
-- **Provider Fallback:** If one provider fails, automatically tries the next
-
-**→ See [PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md) for step-by-step deployment instructions**
-
----
-
-## 🏗️ Architecture
+## Architecture
 
 ```
-User → Auth (Supabase)
-  ↓
-Workspace + Role Isolation (RLS enforced)
-  ↓
-Dashboard (home page, workspace selection)
-  ↓
-AI Command Center (/chat endpoint)
-  ↓
-Router (fallback routing across providers)
-  ↓
-OpenRouter / Groq / Gemini / Qwen
-  ↓
-Stream response back → Store in DB → Return to client
+USER → VERCEL (Next.js frontend + authenticated API)
+     → SUPABASE (auth, Postgres: tasks/jobs/runs/steps/events/
+                 projects/memory/approvals/schedules/bos_*)
+     → RENDER background worker
+         → Xirel Manager (plan → execute via tool gateway → verify)
+             → central AI provider router (Gemini/OpenRouter/Groq/…)
+         → durable queue: FOR UPDATE SKIP LOCKED, leases, heartbeats,
+           checkpoints, bounded retries, approval checkpoints, crons
 ```
 
-**Tech Stack:**
-- **Frontend:** Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS
-- **Backend:** Next.js Server Actions, Route Handlers
-- **Database:** Supabase Postgres with Row Level Security
-- **Auth:** Supabase Auth (email + GitHub OAuth)
-- **ORM:** Drizzle ORM with TypeScript types
-- **Deployment:** Vercel
-- **AI Providers:** OpenRouter, Groq, Gemini, Qwen
+Key sources of truth:
+- `supabase/migrations/0001…0008` — DDL + RLS (0007 fixes the
+  `workspace_members` policy recursion; 0008 is the durable engine).
+- `src/lib/db/schema.ts` — Drizzle mirror (TypeScript types).
+- `src/lib/jobs/` — queue/state machine/retry/backoff.
+- `worker/` — the Render worker (starts independently of Next.js).
+- `docs/` — integration strategy, safe rollout, connector boundaries.
 
-**Design Principles:**
-- ✅ One working piece at a time (no half-built features)
-- ✅ Never fabricate capability claims (verify everything)
-- ✅ Simple maintainable architecture over premature optimization
-- ✅ Strict TypeScript (no `any`, proper narrowing)
-- ✅ Production-grade error handling
-- ✅ Security-first (RLS, auth middleware, input validation)
-
----
-
-## 📁 Project Structure
-
-```
-src/
-├── app/
-│   ├── (dashboard)/
-│   │   ├── chat/
-│   │   │   ├── page.tsx           # Chat server component
-│   │   │   └── chat-client.tsx    # Chat UI (streaming)
-│   │   └── dashboard/
-│   │       ├── page.tsx           # Dashboard home
-│   │       └── sign-out-button.tsx
-│   ├── api/
-│   │   ├── chat/route.ts          # Streaming chat endpoint
-│   │   ├── tasks/
-│   │   │   ├── list/route.ts      # Get workspace tasks
-│   │   │   └── get/route.ts       # Get specific task
-│   │   └── ai/health/route.ts     # Provider health check
-│   ├── login/page.tsx             # Email + OAuth signin
-│   ├── onboarding/                # Workspace creation
-│   ├── page.tsx                   # Root redirect
-│   └── layout.tsx
-├── lib/
-│   ├── ai/
-│   │   ├── providers/
-│   │   │   ├── openrouter.ts      # OpenRouter adapter
-│   │   │   ├── groq.ts            # Groq adapter
-│   │   │   ├── gemini.ts          # Gemini adapter
-│   │   │   └── qwen.ts            # Qwen adapter
-│   │   ├── router/index.ts        # Fallback routing
-│   │   ├── config.ts              # Provider detection
-│   │   ├── registry.ts            # Provider registry
-│   │   └── types.ts               # AiProvider interface
-│   ├── auth/
-│   │   ├── supabase-browser.ts    # Client Supabase
-│   │   └── supabase-server.ts     # Server Supabase
-│   ├── db/
-│   │   ├── schema.ts              # Drizzle schema
-│   │   ├── index.ts               # DB instance
-│   │   ├── admin.ts               # Admin client
-│   │   └── setup-check.ts         # Migration status
-│   ├── tasks/
-│   │   └── queries.ts             # Task DB operations
-│   └── workspaces/
-│       ├── create-workspace.ts    # Server action
-│       └── slug.ts                # Slug generation
-├── middleware.ts                  # Auth session refresh
-└── supabase/
-    └── migrations/
-        ├── 0001_foundation.sql    # Phase 1: Auth, workspaces
-        └── 0002_phase2_tasks_messages.sql # Phase 2: Chat
-```
-
----
-
-## 🎯 Quick Start
-
-### For Deployment (Production)
-
-1. **Push to GitHub**
-   ```bash
-   git push origin main --force
-   ```
-   Vercel auto-deploys on push
-
-2. **Run Database Migration** (one-time setup)
-   - Open Supabase SQL Editor
-   - Paste `supabase/migrations/0002_phase2_tasks_messages.sql`
-   - Click Run
-
-3. **Test Chat Interface**
-   - Navigate to `/chat`
-   - Send a message
-   - See streaming response in real-time
-
-→ **Full instructions:** [PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md)
-
-### For Local Development
+## Commands
 
 ```bash
-# Setup
-npm install
-cp .env.example .env.local
-# Fill in .env.local with your values
-
-# Development
-npm run dev
-
-# Type check
-npm run typecheck
-
-# Build (for preview)
-npm run build
+npm run dev          # Next.js dev server
+npm run build        # production build (type-checked)
+npm run typecheck    # tsc --noEmit
+npm run worker       # background worker (node --conditions=react-server --import tsx)
+npm run test:logic   # 59 pure-logic checks (state machine, backoff, cron, …)
+npm run test:db      # 44 checks against a REAL throwaway PostgreSQL
+                     #   (applies every migration; verifies RLS + queue)
 ```
 
-**Environment Variables Required:**
-- `NEXT_PUBLIC_SUPABASE_URL` — Your Supabase project URL
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase anon key
-- `DATABASE_URL` — Postgres connection string
-- `SUPABASE_SERVICE_ROLE_KEY` — Service role key (for server-only operations)
-- `NEXT_PUBLIC_APP_URL` — Your app's URL (e.g., `http://localhost:3000` for local)
-- `OPENROUTER_API_KEY` — OpenRouter API key (get from https://openrouter.ai/keys)
-- Optional: `GEMINI_API_KEY`, `GROQ_API_KEY`, `QWEN_API_KEY` — Other provider keys
+## Environment
 
----
+Copy `.env.example` → `.env.local` and fill in at minimum
+`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and
+`DATABASE_URL` (production must use the Supabase **transaction pooler**
+string on Vercel; the Render worker uses the direct connection).
+Provider keys (Gemini/OpenRouter/Groq) enable AI features — unconfigured
+providers are skipped, never faked. Render configuration lives in
+`render.yaml` (manual deploy; secrets stay in the dashboard).
 
-## 📖 Documentation
+## Deployment status
 
-- **[PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md)** ← **Start here for deployment**
-- **[PHASE_2_SUMMARY.md](./PHASE_2_SUMMARY.md)** — Technical implementation details
-- **[BUILD_FIXES.md](./BUILD_FIXES.md)** — TypeScript fixes and patterns
-- **[MIGRATION_SAFETY.md](./MIGRATION_SAFETY.md)** — Database migration patterns
-
----
-
-## ✨ Current Features
-
-### Authentication (Phase 1)
-- ✅ Email magic link sign-in
-- ✅ GitHub OAuth (with Supabase)
-- ✅ Session refresh via middleware
-- ✅ Secure logout
-
-### Workspaces (Phase 1)
-- ✅ Create workspaces
-- ✅ Team member management
-- ✅ Role-based access (owner, admin, member, viewer)
-- ✅ Row Level Security (database-enforced isolation)
-
-### AI Command Center (Phase 2)
-- ✅ Real-time streaming chat
-- ✅ Task creation and tracking
-- ✅ Message history persistence
-- ✅ Multiple AI provider support
-- ✅ Automatic provider fallback
-- ✅ Status tracking (queued, planning, running, completed, failed)
-- ✅ Health monitoring (`/api/ai/health`)
-
-### Provider Support
-- ✅ **OpenRouter** — Aggregator for multiple models (Claude, GPT, Llama, etc.)
-- ✅ **Groq** — Fast open-source model inference
-- ✅ **Google Gemini** — Google's LLM
-- ✅ **Alibaba Qwen** — Chinese LLM
-- 📋 Coming: Anthropic, OpenAI (adaptable architecture)
-
----
-
-## 🔄 What's NOT Included (Future Phases)
-
-### Phase 3: Agent Framework
-- Task decomposition and multi-step workflows
-- Specialized agents (Orchestrator, Developer, Research, Testing, etc.)
-- Tool registry and function calling
-- Agentic loops and reasoning
-
-### Phase 4: Developer Agent
-- GitHub repository integration
-- Code analysis and modification
-- Automated testing
-- Pull request creation
-
-### Phase 5: Deployment Automation
-- Cloud provider integration (AWS, Azure, GCP, etc.)
-- Automated deployments
-- Health monitoring and alerts
-- Approval workflows
-
-### Phase 6+: Leads, CRM, Marketing, Social, Analytics
-- Business intelligence features
-- Social media integration
-- Content calendar management
-- Performance analytics
-
----
-
-## 🧪 Testing & Verification
-
-### Phase 1 Verification (Already Deployed)
-- [x] Authentication (email + GitHub)
-- [x] Workspace creation
-- [x] Dashboard loads
-- [x] AI provider detection works
-
-### Phase 2 Pre-Deployment Checklist
-- [x] TypeScript builds successfully
-- [x] Chat endpoint streams correctly
-- [x] Database schema is idempotent
-- [x] RLS policies prevent data leakage
-- [x] Error handling is comprehensive
-
-### Phase 2 Post-Deployment Steps
-1. Run database migration
-2. Test chat end-to-end
-3. Verify message persistence
-4. Check provider health
-5. Monitor logs for errors
-
-→ See [PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md#verification-checklist) for complete checklist
-
----
-
-## 🔐 Security
-
-**Row Level Security (Database-Enforced):**
-- Users can only see data in workspaces they're members of
-- Workspace admins can manage their workspace
-- Profile data is personal to each user
-
-**Authentication:**
-- Secure session management via Supabase Auth
-- Middleware refreshes sessions automatically
-- OAuth configured with HTTPS redirect URIs
-
-**API Protection:**
-- All API endpoints require authentication
-- Server-side validation on all inputs
-- No secrets exposed in client-side code
-
-**Code Quality:**
-- Strict TypeScript (no `any` types)
-- No hardcoded credentials
-- Input validation with Zod schemas
-- Comprehensive error handling
-
----
-
-## 📊 Performance
-
-**Streaming Response Times:**
-- First token: 1-3 seconds (provider dependent)
-- Streaming speed: 30-50 tokens/second
-- Database queries: <100ms
-- Full response: 10-30 seconds for typical queries
-
-**Scaling:**
-- Database indexes on frequently queried columns
-- RLS policies optimized for common access patterns
-- Server-side streaming reduces client memory usage
-- Vercel's edge functions for deployment
-
----
-
-## 🚨 Troubleshooting
-
-**Chat shows "Setup Required"?**
-→ Run Phase 2 database migration (see [PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md#step-3))
-
-**Authentication not working?**
-→ Verify Supabase OAuth config and redirect URLs
-
-**Messages not saving?**
-→ Check database connection and RLS policies
-
-**Provider health check failing?**
-→ Verify API keys are set and have active credits
-
-→ Full troubleshooting guide: [PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md#troubleshooting)
-
----
-
-## 📈 Next Steps
-
-### Immediate (After Phase 2 Deploy)
-- Monitor production logs
-- Test with various message types
-- Gather user feedback
-
-### Phase 3 Planning
-- Design agent framework
-- Specify tool registry
-- Plan task decomposition
-
-### Phase 4 Planning
-- GitHub API integration design
-- Code analysis approach
-- Testing strategy
-
----
-
-## 📝 License
-
-Built by a single engineer focused on quality over speed. Open to collaborators who share these principles.
-
----
-
-## 🎯 Mission
-
-Build a real AI Business Operating System—not a chatbot, not a demo, but a production system that transforms how businesses work with AI.
-
-**Status:** ✅ Phase 1 live, Phase 2 complete, Phase 3 planned
-
----
-
-**Questions? Issues? Check the documentation above or open an issue on GitHub.**
-
-**Ready to deploy Phase 2? Start with [PHASE_2_DEPLOYMENT.md](./PHASE_2_DEPLOYMENT.md)**
+Phase 1–4 AI OS code complete and tested (logic + real-DB suites);
+hybrid integration with the Business OS complete. Production rollout is
+gated behind the safe-rollout plan — see `docs/safe-rollout.md` (migrations
+are applied manually in Supabase; nothing auto-deploys to production).
